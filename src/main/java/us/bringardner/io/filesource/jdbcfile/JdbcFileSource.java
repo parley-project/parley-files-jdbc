@@ -94,15 +94,6 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	static final String OTHER_WRITEABLE = "other_writeable";
 	static final String OTHER_EXECUTABLE = "other_executable";
 
-
-
-
-	
-
-	private enum WhoAmI {Owner,Group,Other};
-
-
-
 	@Retention(RetentionPolicy.RUNTIME)
 	@Target(ElementType.FIELD)
 	public @interface NotAField {
@@ -225,6 +216,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	}
 
+	/*
 	private WhoAmI whoAmI() throws IOException {
 		WhoAmI ret = WhoAmI.Other;
 		String owner = getStringValue(OWNER);
@@ -242,33 +234,8 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 		return ret;
 	};
-
-	@Override
-	public boolean canRead() throws IOException {
-		boolean ret = false;
-		switch (whoAmI()) {
-		case Owner: ret = canOwnerRead();break;
-		case Group: ret = canGroupRead();break;
-		case Other: ret = canOtherRead();break;
-		default:
-			break;
-		}
-		return ret;
-	}
-
-	@Override
-	public boolean canWrite() throws IOException {
-		boolean ret = false;
-		switch (whoAmI()) {
-		case Owner: ret = canOwnerWrite();break;
-		case Group: ret = canGroupWrite();break;
-		case Other: ret = canOtherWrite();break;
-		default:
-			break;
-		}
-		return ret;
-	}
-
+*/
+	
 	@Override
 	public boolean canGroupExecute() throws IOException {
 		return getBooleanValue(GROUP_EXECUTABLE);
@@ -1234,6 +1201,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 		return ret;
 	}
+
 
 	@Override
 	public IRandomAccessStream getRandomAccessStream(String mode) throws IOException {

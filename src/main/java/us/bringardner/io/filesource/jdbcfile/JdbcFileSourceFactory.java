@@ -52,7 +52,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 
 	private static final long serialVersionUID = 1L;
 
-	public static final String FACTORY_ID = "JdbcFile";
+	public static final String FACTORY_ID = "Jdbc";
 
 	public static final String JDBC_DRIVER = "jdbcDriver";
 	public static final String JDBC_URL = "jdbcURL";
