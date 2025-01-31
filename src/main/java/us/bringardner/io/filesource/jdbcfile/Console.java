@@ -694,7 +694,8 @@ public class Console {
 							String os = System.getProperty("os.name").toLowerCase();
 							if( !noSwing && (os.contains("mac") || os.contains("win"))) {
 								PropertiesEditDialog dialog = new PropertiesEditDialog();
-								if( !dialog.showDialog(props)) {
+								Properties p = dialog.showDialog(props);
+								if( p == null) {
 									out.writeLine("Connect canceled by user");
 									return;
 								}
