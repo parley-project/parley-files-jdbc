@@ -47,9 +47,9 @@ import us.bringardner.io.LFLineReader;
 import us.bringardner.io.LFLineWriter;
 import us.bringardner.io.MonitoredInputStream;
 import us.bringardner.io.filesource.CommandLinePropertyEditor;
+import us.bringardner.io.filesource.FactoryPropertiesDialog;
 import us.bringardner.io.filesource.FileSource;
 import us.bringardner.io.filesource.FileSourceFactory;
-import us.bringardner.io.filesource.PropertiesEditDialog;
 import us.bringardner.io.filesource.fileproxy.FileProxyFactory;
 
 
@@ -693,12 +693,13 @@ public class Console {
 							props.remove("Name");
 							String os = System.getProperty("os.name").toLowerCase();
 							if( !noSwing && (os.contains("mac") || os.contains("win"))) {
-								PropertiesEditDialog dialog = new PropertiesEditDialog();
-								Properties p = dialog.showDialog(props);
-								if( p == null) {
+								FactoryPropertiesDialog dialog = new FactoryPropertiesDialog();
+								dialog.showDialog(tmp);
+								if( dialog.isCancel()) {
 									out.writeLine("Connect canceled by user");
 									return;
-								}
+								} 
+								tmp = dialog.getFactory();
 							} else {
 
 								CommandLinePropertyEditor editor = new CommandLinePropertyEditor();
