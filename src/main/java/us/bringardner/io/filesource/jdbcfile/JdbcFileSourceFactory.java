@@ -436,6 +436,18 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	}
 
 
+	@Override
+	public FileSource createSymbolicLink(FileSource newFileLink, FileSource existingFile) throws IOException {
+		throw new UnsupportedOperationException();
+	}
+
+
+	@Override
+	public FileSource createLink(FileSource newFileLink, FileSource existingFile) throws IOException {
+		throw new UnsupportedOperationException();
+	}
+
+
 
 
 }
