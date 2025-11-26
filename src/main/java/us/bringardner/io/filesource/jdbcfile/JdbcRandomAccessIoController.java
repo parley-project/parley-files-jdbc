@@ -33,7 +33,8 @@ public class JdbcRandomAccessIoController implements IRandomAccessIoController {
 		}
 
 		public boolean contains(long pos) {			
-			return pos >= start && pos < (start+data.length);
+			long max = (start+data.length);
+			return pos >= start && pos < max;
 		}	
 
 	}
@@ -175,7 +176,7 @@ Calf
 			if( currentChunk.isDirty)  {
 				save();
 			} else if(maxWriteOffset!=-1) {
-				throw new IOException("MAx write is not 0 but chunk is not dirty");	
+				throw new IOException("Max write is not 0 but chunk is not dirty");	
 			}
 		}
 		// find and load data
@@ -319,6 +320,8 @@ Calf
 
 	private void getMaxChuckFor(long pos) throws IOException {
 		int max = file.getChunkCount();
+		
+		
 		// just to be safe
 		maxWriteOffset = -1;
 		if( pos >= file.length() || max == 0) {
@@ -340,49 +343,70 @@ Calf
 			return;
 		}
 
-
+		if( currentChunk !=null && currentChunk.end==pos && currentChunk.chunk_number<max) {
+			//  just get the next chunk
+			long chunk_number = currentChunk.chunk_number+1;
+			
+			byte [] data1 = file.getChunk(chunk_number);
+			long start_pos = currentChunk.end;
+			Chunk c = new Chunk(start_pos, chunk_number, data1);
+			c.size = data1.length;
+			c.end = start_pos+data1.length;
+			currentChunk = c;
+			return;
+		}
+	
+/*
+select max(chunk_number) as chunk_number ,max(start_pos) as start_pos
+from (
+	select chunk_number, sum(length)  as start_pos
+		from file_source.file_data where fileid = 2
+		group by chunck_number
+		order  by chunk_number
+	) tt
+where start_pos <= 100
+ */
 		try(PreparedStatement pstmt1 = getConnection().prepareStatement(
-				"select max(chunk_number) as chunk_number ,max(start_pos) as start_pos\n"
-						+ "	from (\n"
-						+ "		select chunk_number, sum(length) over (order by chunk_number) as start_pos\n"
-						+ "		from file_source.file_data where fileid = ?\n"
-						+ "	) tt\n"
-						+ "where start_pos <= ?   "
-						+ "	"
+				"select chunk_number, length \n"
+				+ "from file_source.file_data \n"
+				+ "where fileid = ?\n"
+				+ "order by chunk_number"
 				)){
-			pstmt1.setLong(1, file.getFileId());
-			pstmt1.setLong(2, pos);
+			
+			long id = file.getFileId();
+			pstmt1.setLong(1, id);
+			
 
+			long max_chunk = 0;
+			long start_pos = 0;
+			long end_pos = -1;
+			long size=0;
+			
 			try(ResultSet rs1 = pstmt1.executeQuery()) {
-				if(rs1.next()) {					
-					long chunk_number = rs1.getLong("chunk_number")+1;
-					long start_pos    = rs1.getLong("start_pos");
-					byte [] data1 = file.getChunk(chunk_number);
-					if( data1 == null ) {
-						data1 = file.getChunk(--chunk_number);
-						if(data1 == null ) {
-							System.out.println("Can't do it");
+				while(end_pos < pos && rs1.next()) {					
+					max_chunk = rs1.getLong("chunk_number");
+					size      = rs1.getLong("length");
+					start_pos = end_pos < 0 ?0:end_pos;
+					end_pos   = start_pos+size;
+				}
+				if( end_pos == pos) {
+					max_chunk++;
+					start_pos = end_pos;
+				}
+				long chunk_number = max_chunk;
+				byte [] data1 = file.getChunk(chunk_number);
+				if( data1 == null ) {
+					data1 = file.getChunk(--chunk_number);
+					if(data1 == null ) {
+						System.out.println("Can't do it");
 						}
-					}
+				}
 
-					try (PreparedStatement pstmt =getConnection().prepareStatement(
-							"select length from file_source.file_data where chunk_number = ? and fileid=?")){
-
-						pstmt.setLong(1, chunk_number);
-						pstmt.setLong(2, file.getFileId());
-
-						try(ResultSet rs2 = pstmt.executeQuery()) {
-							if( rs2.next()) {
-								Chunk c = new Chunk(start_pos, chunk_number, data1);
-								c.size = rs2.getInt(1);
-								c.end = c.start + c.size;
-								currentChunk = c;
-							} else {
-								throw new IOException("Logic error");
-							}
-						}
-					} 					
-				} 
+				Chunk c = new Chunk(start_pos, chunk_number, data1);
+				c.size = data1.length;
+				c.end = start_pos+data1.length;
+				currentChunk = c;
+				 
 			}
 
 		} catch (SQLException e) {

@@ -28,22 +28,25 @@ package us.bringardner.filesource.jdbc;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.PrintWriter;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.Statement;
+import java.util.Properties;
 
-import org.junit.jupiter.api.AfterAll;
+import org.hsqldb.Server;
 import org.junit.jupiter.api.MethodOrderer.OrderAnnotation;
-import org.junit.jupiter.api.Order;
-import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestMethodOrder;
 
 import us.bringardner.io.filesource.FileSource;
 import us.bringardner.io.filesource.FileSourceFactory;
+import us.bringardner.io.filesource.jdbcfile.JdbcFileSourceFactory;
 
 
 @TestMethodOrder(OrderAnnotation.class)
@@ -80,17 +83,153 @@ public abstract class FileSourceAbstractTestClass {
 	public static FileSourceFactory factory;
 	public static boolean verbose = false;
 
+	public static Server server;
+	public static String databaseName0 = "mainDb";
+	public static String databasePath0 =  "mem:mainDb";
+	public static String databaseName1 =  "standbyDb";
+	public static String databasePath1 =  "mem:standbyDb";
+	//public static String databaseUrl ="jdbc:hsqldb:hsql://localhost:9001/mainDb";
+	public static String databaseDriverName = "org.hsqldb.jdbc.JDBCDriver";
+	public static int timeout = 4000;
+	public static String databaseUser = "SA";
+	public static String databasePassword = "";
+	
 
 
-	@AfterAll
-	static void tearDownAfterAll()  {
-		if( factory != null ) {
-			try {
-				factory.disConnect();
-			} catch (Throwable e) {
+	public boolean enableViewer = false;
+
+
+
+	public static void setUp(int port) throws Exception {
+		String databaseUrl ="jdbc:hsqldb:hsql://localhost:"+port+"/mainDb"+port;
+		localTestFileDirPath = "TestFiles";
+		localCacheDirPath = "target/TestFiles";
+		remoteTestFileDirPath = "TestFiles";
+		
+		startHSQLDB(port,databaseUrl);
+
+		factory = FileSourceFactory.getFileSourceFactory(JdbcFileSourceFactory.FACTORY_ID);
+		Properties p = factory.getConnectProperties();
+
+		p.setProperty(JdbcFileSourceFactory.JDBC_DRIVER, databaseDriverName);
+		p.setProperty(JdbcFileSourceFactory.JDBC_URL, databaseUrl);
+		p.setProperty(JdbcFileSourceFactory.JDBC_USERID, databaseUser);
+		p.setProperty(JdbcFileSourceFactory.JDBC_PASSWORD, databasePassword);
+
+		assertTrue(factory.connect(p));
+		try(InputStream in = TestJdbcFileSource.class.getResourceAsStream("/Hsqldb.ddl")) {
+			byte[] data = in.readAllBytes();
+			
+			String ddl = new String(data);
+			try(Connection con = ((JdbcFileSourceFactory)factory).getConnection()) {
+				try(Statement stmt = con.createStatement()) {
+					stmt.executeUpdate(ddl);					
+				}
 			}
 		}
+		
+		
+	/*
+		org.hsqldb.util.DatabaseManagerSwing.main(new String[0]);
+		
+		System.out.println("Waiting for enter pressed");
+		System.in.read();
+		
+		while(true) {
+			try {
+				Thread.sleep(10000);
+			} catch (InterruptedException e) {
+				// Not implemented
+				e.printStackTrace();
+			}
+		}
+	*/
 	}
+	
+	public void pauseAndExamine(FileSource dir) throws IOException {
+		if( enableViewer) {
+			org.hsqldb.util.DatabaseManagerSwing.main(new String[0]);
+			while(enableViewer) {
+				try {
+					Thread.sleep(10000);
+				} catch (InterruptedException e) {
+					// Not implemented
+					e.printStackTrace();
+				}
+			}
+			/*
+			if( dir != null && dir.exists()) {
+				FileSourceFactory.setDefaultFactory(dir.getFileSourceFactory());
+				FileSourceChooserDialog d = new FileSourceChooserDialog();
+				d.setModal(true);
+				d.openDialogAsBrowser();
+				if( verbose) System.out.println("Browsing complete");
+			}
+			*/
+		}
+	}
+	
+
+	private static void startHSQLDB(int port,String databaseUrl) throws Exception {
+		server = new Server();
+		// turn off HSQLDB logging
+		server.setLogWriter(new PrintWriter(new OutputStream() {
+
+			@Override
+			public void write(int b) throws IOException {
+
+
+			}
+		}));
+
+		server.setSilent(true);
+		server.setDatabaseName(0, databaseName0+port);
+		server.setDatabasePath(0, databasePath0+port);
+		server.setDatabaseName(1, databaseName1+port);
+		server.setDatabasePath(1,databasePath1+port);
+		server.setPort(port); 
+
+		server.start();
+
+		long start = System.currentTimeMillis();
+
+		while(System.currentTimeMillis()-start < timeout && server.isNotRunning()) {
+			Thread.sleep(100);
+		}
+
+		assertTrue(!server.isNotRunning()," Hsqldb did not start within timeout");
+		Class.forName(databaseDriverName);
+		if( verbose) System.out.println("HsqlServer is running");
+		DriverManager.getConnection(databaseUrl, databaseUser, databasePassword);
+		if( verbose) System.out.println("HsqlServer connection created");
+		
+		/*
+		org.hsqldb.util.DatabaseManagerSwing.main(new String[0]);
+		while(true) {
+			try {
+				Thread.sleep(10000);
+			} catch (InterruptedException e) {
+				// Not implemented
+				e.printStackTrace();
+			}
+		}
+		*/
+		
+		
+	}
+
+	
+	static void tearDown() throws Exception {
+		if( factory != null){
+			factory.disConnect();
+			factory = null;
+		}
+		if( server != null) {
+			server.stop();			
+		}
+		server = null;
+	}
+
 
 	public static void traverseDir(FileSource dir,TestAction action) throws IOException {
 		if(verbose) System.out.println(format(dir));
@@ -238,80 +377,8 @@ public abstract class FileSourceAbstractTestClass {
 		}
 	}
 
-	@Test
-	@Order(1)
-	public void testRoots() throws IOException {
-		
-		FileSource [] roots = factory.listRoots();
-		assertNotNull(roots,"Roots are null");
-		assertTrue(roots.length>0,"No roots files ");
 
-	}
-
-	@Test
-	@Order(2) 
-	public void replicateTestDir() throws IOException {
-		
-		FileSource _localDir = FileSourceFactory.getDefaultFactory().createFileSource(localTestFileDirPath);
-		assertTrue(_localDir.isDirectory(),"local test dir does not exist ="+_localDir);
-
-		FileSource cacheDir = FileSourceFactory.getDefaultFactory().createFileSource(localCacheDirPath);
-		if( cacheDir.exists()) {
-			deleteAll(cacheDir);			
-		}
-		assertFalse(cacheDir.exists(),"local cache dir already exists ="+cacheDir);
-
-		//  Make a copy of the local test directory
-		copy(_localDir,cacheDir);
-
-		FileSource remoteDir = factory.createFileSource(remoteTestFileDirPath);
-		traverseDir(remoteDir, null);
-		if( !remoteDir.exists()) {
-			assertTrue(remoteDir.mkdirs(),"Cannot create remote directory"+remoteDir);			
-		}
-		traverseDir(remoteDir, null);
-
-
-
-		for(FileSource source : cacheDir.listFiles()) {
-			String nm = source.getName();
-			FileSource dest = remoteDir.getChild(nm);
-			copy(source, dest);
-			compare("Copy to remote dir", source, dest);			
-		}
-		traverseDir(remoteDir, null);
-
-		
-		if(verbose) System.out.println("Rename files\n");
-		for(FileSource remoteFile : remoteDir.listFiles()) {
-			String fileName = remoteFile.getName();
-			FileSource localFile = cacheDir.getChild(fileName);
-			compare(fileName, localFile, remoteFile);
-			FileSource remoteParent = remoteFile.getParentFile();
-			
-			FileSource renamedFile = remoteParent.getChild(fileName+".changed");
-			
-			renameAndValidate(remoteFile,renamedFile);
-						
-			compare(fileName, localFile, renamedFile);
-			
-			renameAndValidate(renamedFile,remoteFile);
-			
-			
-			compare(fileName, localFile, remoteFile);
-			
-		}
-
-
-
-		//  delete the roots files
-		deleteAll(cacheDir);
-		deleteAll(remoteDir);
-		traverseDir(remoteDir, null);
-
-	}
-
-	private void renameAndValidate(FileSource source, FileSource target) throws IOException {
+	public void renameAndValidate(FileSource source, FileSource target) throws IOException {
 		assertTrue(
 				source.renameTo(target)
 				,"Can't rename "+source+" to "+target);			
@@ -324,32 +391,8 @@ public abstract class FileSourceAbstractTestClass {
 	}
 
 	
-	@Test
-	@Order(3)
-	public void testPermissions() throws IOException {
-		FileSource remoteDir = factory.createFileSource(remoteTestFileDirPath);
-		if( !remoteDir.exists()) {
-			assertTrue(remoteDir.mkdirs(),"Can't create dirs for "+remoteTestFileDirPath);
-		}
-		
-		FileSource file = remoteDir.getChild("TestPermissions.txt");
-		try(OutputStream out = file.getOutputStream()) {
-			out.write("Put some data in the file".getBytes());
-		}
-		
-
-		for(Permissions p : Permissions.values()) {
-			//  if we turn off owner write we won't be able to turn it back on.
-			if( p != Permissions.OwnerWrite) {
-				changeAndValidatePermission(p,file);
-			}
-		}
-		
-		assertTrue(file.delete(),"Can't delete "+file);
-		
-	}
-
-	private boolean setPermission(Permissions p, FileSource file,boolean b) throws IOException {
+	
+	public boolean setPermission(Permissions p, FileSource file,boolean b) throws IOException {
 		boolean ret = false;
 		switch (p) {
 		case OwnerRead: 	ret = file.setOwnerReadable(b); break;
@@ -371,7 +414,7 @@ public abstract class FileSourceAbstractTestClass {
 		return ret;
 	}
 	
-	private boolean getPermission(Permissions p, FileSource file) throws IOException {
+	public boolean getPermission(Permissions p, FileSource file) throws IOException {
 		boolean ret = false;
 		switch (p) {
 		case OwnerRead:    ret = file.canOwnerRead(); break;
@@ -392,7 +435,7 @@ public abstract class FileSourceAbstractTestClass {
 		return ret;
 	}
 	
-	private void changeAndValidatePermission(Permissions p, FileSource file) throws IOException {
+	public void changeAndValidatePermission(Permissions p, FileSource file) throws IOException {
 		
 		//Get the current value		
 		boolean b = getPermission(p, file);
