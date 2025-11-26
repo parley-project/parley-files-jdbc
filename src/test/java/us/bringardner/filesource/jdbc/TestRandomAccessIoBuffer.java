@@ -25,14 +25,13 @@
  */
 package us.bringardner.filesource.jdbc;
 
+import static org.junit.Assert.assertTrue;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Properties;
 import java.util.Random;
 
 import org.junit.jupiter.api.AfterAll;
@@ -49,48 +48,32 @@ import us.bringardner.io.filesource.jdbcfile.JdbcRandomAccessIoController;
 
 
 @TestMethodOrder(OrderAnnotation.class)
-public class TestRandomAccessIoBuffer {
+public class TestRandomAccessIoBuffer extends FileSourceAbstractTestClass {
 
 
 
-	static JdbcFileSourceFactory factory;
 	static int chunk_size = 100;
 	static long targetFileSize=1000;
 	static String testDataString = "0123456789";
 	static byte [] testData = testDataString.getBytes();
-	static JdbcFileSource file;
-	static JdbcFileSource testDir;
+	static FileSource file;
+	static FileSource testDir;
 
 	@BeforeAll
-	public static void setup() throws IOException {
-		String url = "jdbc:postgresql://localhost:5432/tony";
-		factory = new JdbcFileSourceFactory();
-
-		Properties prop = new Properties();
-		prop.setProperty(JdbcFileSourceFactory.JDBC_USERID, "tony");
-		prop.setProperty(JdbcFileSourceFactory.JDBC_PASSWORD, "0000");
-		prop.setProperty(JdbcFileSourceFactory.JDBC_URL, url);
-		prop.setProperty(JdbcFileSourceFactory.JDBC_DRIVER, "org.postgresql.Driver");
-
-		if(!factory.connect(prop)) {
-			throw new IOException("Can't connect");
+	public static void setup() throws Exception {
+		FileSourceAbstractTestClass.setUp(9003);
+		testDir = factory.createFileSource(remoteTestFileDirPath);
+		assertTrue(testDir.mkdirs());
+		if (factory instanceof JdbcFileSourceFactory) {
+			JdbcFileSourceFactory jdbc = (JdbcFileSourceFactory) factory;
+			jdbc.setChunk_size(chunk_size);
 		}
-
-		FileSource root = factory.listRoots()[0];
-
-		testDir = (JdbcFileSource) root.getChild("UnitTestDir");
-		if( !testDir.exists()) {
-			assertTrue(testDir.mkdirs(),"Can't create test dir");
-		}
-
-		factory.setChunk_size(chunk_size);
 	}
 
 	@AfterAll
-	public static void teardown() throws IOException {
-
-
-		factory.disConnect();
+	public static void teardown() throws Exception {
+		FileSourceAbstractTestClass.tearDown();
+				
 	}
 
 	@Test
@@ -132,7 +115,7 @@ public class TestRandomAccessIoBuffer {
 		int doTries = 40;
 		try(JdbcRandomAccessIoController buf = new JdbcRandomAccessIoController((JdbcFileSource) file)){
 			while(tries < doTries) {
-				long pos = r.nextLong(len);
+				long pos = r.nextInt((int)len);
 				int idx = ((int)pos) % testData.length;
 				int expect = testData[idx];
 				int i = buf.read(pos);
@@ -159,7 +142,7 @@ public class TestRandomAccessIoBuffer {
 		int doTries = 40;
 		try(JdbcRandomAccessIoController buf = new JdbcRandomAccessIoController((JdbcFileSource) file)){
 			while(tries < doTries) {
-				long pos = r.nextLong(len);
+				long pos = r.nextInt((int)len);
 				int idx = ((int)pos) % data.length;
 				int expect = testData[idx];
 				buf.write(pos, (byte) expect);

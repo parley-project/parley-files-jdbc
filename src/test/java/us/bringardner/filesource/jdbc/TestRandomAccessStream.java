@@ -33,7 +33,6 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Properties;
 import java.util.Random;
 
 import org.junit.jupiter.api.AfterAll;
@@ -52,7 +51,7 @@ import us.bringardner.io.filesource.jdbcfile.JdbcRandomAccessIoController;
 
 
 @TestMethodOrder(OrderAnnotation.class)
-public class TestRandomAccessStream {
+public class TestRandomAccessStream extends FileSourceAbstractTestClass {
 
 
 	enum Action{Write,Read,Seek,SetLength}
@@ -69,7 +68,7 @@ public class TestRandomAccessStream {
 			this.action = action;
 		}
 	}
-	static JdbcFileSourceFactory factory;
+	
 	static int chunk_size = 100;
 	static long targetFileSize=500;
 	static String testDataString = "0123456789";
@@ -78,37 +77,30 @@ public class TestRandomAccessStream {
 	static JdbcFileSource testDir;
 
 	@BeforeAll
-	public static void setup() throws IOException {
-		String url = "jdbc:postgresql://localhost:5432/tony";
-		factory = new JdbcFileSourceFactory();
-
-		Properties prop = new Properties();
-		prop.setProperty(JdbcFileSourceFactory.JDBC_USERID, "tony");
-		prop.setProperty(JdbcFileSourceFactory.JDBC_PASSWORD, "0000");
-		prop.setProperty(JdbcFileSourceFactory.JDBC_URL, url);
-		prop.setProperty(JdbcFileSourceFactory.JDBC_DRIVER, "org.postgresql.Driver");
-
-		if(!factory.connect(prop)) {
-			throw new IOException("Can't connect");
-		}
-
+	public static void setup() throws Exception {
+		FileSourceAbstractTestClass.setUp(9002);
+		
+		
 		FileSource root = factory.listRoots()[0];
-
 		testDir = (JdbcFileSource) root.getChild("UnitTestDir");
-		if( !testDir.exists()) {
-			assertTrue(testDir.mkdirs(),"Can't create test dir");
+		assertTrue(testDir.mkdirs());
+
+		if (factory instanceof JdbcFileSourceFactory) {
+			JdbcFileSourceFactory jdbc = (JdbcFileSourceFactory) factory;
+			jdbc.setChunk_size(chunk_size);
 		}
 
-		factory.setChunk_size(chunk_size);
+	
 	}
 
 	@AfterAll
-	public static void teardown() throws IOException {
+	public static void teardown() throws Exception {
+		
 		if( file.exists()) {
 			file.delete();
 		}
-
-		factory.disConnect();
+		FileSourceAbstractTestClass.tearDown();
+		
 	}
 
 	@Test
@@ -135,10 +127,12 @@ public class TestRandomAccessStream {
 				ram.write(testData);
 				buf.append(testDataString);
 			}
+		} catch (Exception e) {
+			System.out.println(e);
 		}
 
-		
-		byte buffer [] = new byte[(int)file.length()];
+		int sz = (int)file.length();
+		byte buffer [] = new byte[sz];
 		try(FileSourceRandomAccessStream ram = new FileSourceRandomAccessStream(new JdbcRandomAccessIoController(file), "rw")) {
 			ram.readFully(buffer);
 		}
@@ -402,7 +396,7 @@ public class TestRandomAccessStream {
 							len = 10;
 						}
 						long bounds = (long)(len*1.5);
-						long pos = r.nextLong(bounds);
+						long pos = r.nextInt((int)bounds);
 						entry.value = pos;
 						jram.seek(pos);
 						ram.seek(pos);
@@ -414,7 +408,7 @@ public class TestRandomAccessStream {
 						}
 
 						bounds = (long)(len*1.5);
-						pos = r.nextLong(bounds);
+						pos = r.nextInt((int)bounds);
 						entry.value = pos;
 						jram.setLength(pos);
 						try {
