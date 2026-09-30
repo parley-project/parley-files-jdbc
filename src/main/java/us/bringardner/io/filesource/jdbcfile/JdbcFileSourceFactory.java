@@ -44,6 +44,12 @@ import us.bringardner.database.pool.ObjectPool;
 import us.bringardner.io.filesource.FileSource;
 import us.bringardner.io.filesource.FileSourceFactory;
 import us.bringardner.io.filesource.FileSourceUser;
+import java.sql.DatabaseMetaData;
+import java.sql.ResultSet;
+import java.sql.Statement;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Locale;
 
 /**
  * @author Tony Bringardner
@@ -64,6 +70,10 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	public static final String JDBC_GROUP = "jdbcGroup";
 	/** The schema's default GROUP_NAME for new files. */
 	public static final String DEFAULT_GROUP = "staff";
+	/** "false" leaves an older schema alone; otherwise narrow owner/group columns are widened on connect. */
+	public static final String JDBC_UPGRADE_SCHEMA = "jdbcUpgradeSchema";
+	/** Width of the owner and group_name columns (the SQL standard identifier length). */
+	public static final int NAME_COLUMN_SIZE = 128;
 	public static final String TYPE_DIR = "dir";
 	public static final String TYPE_FILE = "file";
 	public static final String TYPE_ROOT = "root";
@@ -110,6 +120,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 		_connectProperties.setProperty(JDBC_USERID, "");
 		_connectProperties.setProperty(JDBC_PASSWORD, "");
 		_connectProperties.setProperty(JDBC_GROUP, DEFAULT_GROUP);
+		_connectProperties.setProperty(JDBC_UPGRADE_SCHEMA, "true");
 		ObjectPool.setDefaultMax(100); 
 	}
 
@@ -314,6 +325,78 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	}
 	
 
+	/**
+	 * Widens file_source.file.owner and group_name to VARCHAR(NAME_COLUMN_SIZE) when
+	 * the schema predates BJL-22 (VARCHAR(10)), so user names longer than 10
+	 * characters can be stored. Runs on connect unless jdbcUpgradeSchema is "false".
+	 * Never fails the connection: problems (e.g. no ALTER rights, an unknown database)
+	 * are logged, and the README has the statements to run by hand.
+	 *
+	 * @return the columns that were widened
+	 */
+	public List<String> widenNameColumns(Connection con) {
+		List<String> ret = new ArrayList<>();
+		try {
+			DatabaseMetaData md = con.getMetaData();
+			String product = md.getDatabaseProductName();
+			for(String column : new String[] {"owner", "group_name"}) {
+				int size = columnSize(md, column);
+				if( size > 0 && size < NAME_COLUMN_SIZE ) {
+					try(Statement st = con.createStatement()) {
+						st.executeUpdate(alterSql(product, column));
+					}
+					if( !con.getAutoCommit()) {
+						con.commit();
+					}
+					ret.add(column);
+					logInfo("Widened file_source.file."+column+" from VARCHAR("+size+") to VARCHAR("+NAME_COLUMN_SIZE+")");
+				}
+			}
+		} catch (SQLException | RuntimeException e) {
+			logWarn("Can't widen the owner/group columns of file_source.file (see README, Upgrading an existing database): "+e);
+		}
+		return ret;
+	}
+
+	/** The column's declared size, or -1 if it isn't found. */
+	private static int columnSize(DatabaseMetaData md, String column) throws SQLException {
+		String esc = md.getSearchStringEscape();
+		java.util.function.UnaryOperator<String> pattern = n -> esc == null || esc.isEmpty() ? n : n.replace("_", esc+"_");
+		// identifier case and "schema" differ: HSQLDB stores upper case, PostgreSQL lower,
+		// and MySQL treats file_source as a database (catalog), not a schema
+		String[][] tries = {
+				{null, "FILE_SOURCE", "FILE", column.toUpperCase(Locale.ROOT)},
+				{null, "file_source", "file", column},
+				{"file_source", null, "file", column}};
+		for(String[] t : tries) {
+			try(ResultSet rs = md.getColumns(t[0], t[1] == null ? null : pattern.apply(t[1]), t[2], pattern.apply(t[3]))) {
+				if( rs.next()) {
+					return rs.getInt("COLUMN_SIZE");
+				}
+			}
+		}
+		return -1;
+	}
+
+	/**
+	 * The statement that widens a name column for the given database product
+	 * (DatabaseMetaData.getDatabaseProductName()); SQL standard syntax unless it's
+	 * MySQL/MariaDB or PostgreSQL.
+	 */
+	public static String alterSql(String product, String column) {
+		String p = product == null ? "" : product.toLowerCase(Locale.ROOT);
+		String type = "VARCHAR("+NAME_COLUMN_SIZE+")";
+		if( p.contains("mysql") || p.contains("mariadb")) {
+			// MODIFY restates the whole column
+			String rest = column.equals("owner") ? " NOT NULL" : " DEFAULT '"+DEFAULT_GROUP+"'";
+			return "ALTER TABLE file_source.file MODIFY "+column+" "+type+rest;
+		}
+		if( p.contains("postgres")) {
+			return "ALTER TABLE file_source.file ALTER COLUMN "+column+" TYPE "+type;
+		}
+		return "ALTER TABLE file_source.file ALTER COLUMN "+column+" SET DATA TYPE "+type;
+	}
+
 	@Override
 	protected synchronized boolean connectImpl() {
 		boolean ret = false;
@@ -346,6 +429,9 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 				try(Connection con = tmp.getConnection()) {
 					pool = tmp;
 					ret = true;
+					if( !"false".equalsIgnoreCase(prop.getProperty(JDBC_UPGRADE_SCHEMA, "true").trim())) {
+						widenNameColumns(con);
+					}
 				}
 			}
 		} catch (SQLException e) {
@@ -440,8 +526,8 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 			String key = (String)name;
 			String value = prop.getProperty( key );
 			if( value == null ) {
-				// not given: the group keeps the schema default, everything else is empty
-				value = JDBC_GROUP.equals(key) ? DEFAULT_GROUP : "";
+				// not given: the group and the upgrade switch keep their defaults, everything else is empty
+				value = JDBC_GROUP.equals(key) || JDBC_UPGRADE_SCHEMA.equals(key) ? _connectProperties.getProperty(key) : "";
 			}
 			instanceProperies.setProperty(key, value);
 		}		
