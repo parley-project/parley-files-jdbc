@@ -3,7 +3,7 @@
 	xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
 	<modelVersion>4.0.0</modelVersion>
 	<groupId>us.bringardner</groupId>
-	<version>0.1.1</version>
+	<version>1.0.0-SNAPSHOT</version>
 
 
 	<artifactId>bjl_file_system_jdbc</artifactId>
@@ -11,6 +11,26 @@
 	<description>Implementation of a file system with a JDBC datastore</description>
 
 	<build>
+
+		<!-- Eclipse uses resources/ as a source folder; Maven has to be told, or the
+
+		     FileSourceFactory service registration (and any other files there) is left out of the jar -->
+
+		<resources>
+
+			<resource>
+
+				<directory>resources</directory>
+
+			</resource>
+
+			<resource>
+
+				<directory>src/main/resources</directory>
+
+			</resource>
+
+		</resources>
 		<!-- <sourceDirectory>src</sourceDirectory> -->
 		<pluginManagement>
 			<plugins>
@@ -96,19 +116,19 @@
 		<dependency>
 			<groupId>us.bringardner</groupId>
 			<artifactId>bjl_core</artifactId>
-			<version>0.1.1</version>
+			<version>1.0.0</version>
 		</dependency>
 
 		<dependency>
 			<groupId>us.bringardner</groupId>
 			<artifactId>bjl_io</artifactId>
-			<version>0.1.1</version>
+			<version>1.0.0</version>
 		</dependency>
 
 		<dependency>
 			<groupId>us.bringardner</groupId>
 			<artifactId>bjl_file_system</artifactId>
-			<version>0.1.1</version>
+			<version>1.0.2-SNAPSHOT</version>
 		</dependency>
 		
 		<!-- https://mvnrepository.com/artifact/junit/junit -->
@@ -143,6 +163,13 @@
 			<scope>test</scope>
 		</dependency>
 
+		<!-- Tests use JUnit 5; it used to arrive, wrongly, through bjl_file_system 0.1.1 -->
+		<dependency>
+			<groupId>org.junit.jupiter</groupId>
+			<artifactId>junit-jupiter</artifactId>
+			<version>5.11.4</version>
+			<scope>test</scope>
+		</dependency>
 	</dependencies>
 
 </project>
