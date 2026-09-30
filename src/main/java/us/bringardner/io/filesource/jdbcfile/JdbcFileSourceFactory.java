@@ -43,6 +43,7 @@ import us.bringardner.database.pool.JdbcConnectionPool;
 import us.bringardner.database.pool.ObjectPool;
 import us.bringardner.io.filesource.FileSource;
 import us.bringardner.io.filesource.FileSourceFactory;
+import us.bringardner.io.filesource.FileSourceUser;
 
 /**
  * @author Tony Bringardner
@@ -59,6 +60,10 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	public static final String JDBC_USERID = "jdbcUserid";
 	public static final String JDBC_PASSWORD = "jdbcPassword";
 	public static final String JDBC_CONNECTION_NAME = "Name";
+	/** The group the database user belongs to for file permissions; empty means none. */
+	public static final String JDBC_GROUP = "jdbcGroup";
+	/** The schema's default GROUP_NAME for new files. */
+	public static final String DEFAULT_GROUP = "staff";
 	public static final String TYPE_DIR = "dir";
 	public static final String TYPE_FILE = "file";
 	public static final String TYPE_ROOT = "root";
@@ -104,6 +109,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 		_connectProperties.setProperty(JDBC_URL, "");
 		_connectProperties.setProperty(JDBC_USERID, "");
 		_connectProperties.setProperty(JDBC_PASSWORD, "");
+		_connectProperties.setProperty(JDBC_GROUP, DEFAULT_GROUP);
 		ObjectPool.setDefaultMax(100); 
 	}
 
@@ -141,6 +147,29 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 
 	public String getUserId() {
 		return getConnectProperties().getProperty(JDBC_USERID);
+	}
+
+	/**
+	 * The current user as this file system sees it: the database user (jdbcUserid),
+	 * which is also the owner recorded for every file this factory creates, with
+	 * jdbcGroup (default "staff", the schema's default group) as its only group.
+	 * <p>
+	 * The inherited version returned the operating system user, which never matches a
+	 * file's owner, so owner permissions never applied and whether a file could be
+	 * written depended on the OS user happening to be in a group called staff.
+	 */
+	@Override
+	public FileSourceUser whoAmI() {
+		String id = getUserId();
+		String group = getConnectProperties().getProperty(JDBC_GROUP, "");
+		if( group.isEmpty() ) {
+			FileSourceUser ret = new FileSourceUser();
+			ret.setId(-1);
+			ret.setName(id == null ? "" : id);
+			return ret;
+		}
+		// -1: not a numeric id (and never mistaken for root)
+		return new FileSourceUser(-1, id == null ? "" : id, -1, group);
 	}
 
 	public int getFieldTimeToLive() {
@@ -411,7 +440,8 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 			String key = (String)name;
 			String value = prop.getProperty( key );
 			if( value == null ) {
-				value = "";
+				// not given: the group keeps the schema default, everything else is empty
+				value = JDBC_GROUP.equals(key) ? DEFAULT_GROUP : "";
 			}
 			instanceProperies.setProperty(key, value);
 		}		
