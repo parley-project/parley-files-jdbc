@@ -13,7 +13,10 @@ permissions stored with each file.
 ## Upgrading an existing database
 
 The `owner` and `group_name` columns were `VARCHAR(10)`, too short for many user ids.
-New schemas (the `.ddl` files in `resources/`) use `VARCHAR(128)`. To widen an existing one:
+New schemas (the `.ddl` files in `resources/`) use `VARCHAR(128)`. An existing schema is
+widened automatically when the factory connects (the result is logged). To leave the
+schema alone, set the connection property `jdbcUpgradeSchema` to `false`; if the database
+user may not alter the table, or you'd rather do it yourself, run:
 
 | Database | Statements |
 |---|---|
