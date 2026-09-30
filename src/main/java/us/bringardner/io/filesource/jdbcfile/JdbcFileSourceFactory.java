@@ -339,6 +339,15 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 		}
 	}
 
+	/**
+	 * Only the password. (A JDBC URL can also carry credentials, e.g. ?password=...;
+	 * put them in jdbcPassword instead, or they will be saved and shown.)
+	 */
+	@Override
+	public boolean isSecretProperty(String name) {
+		return JDBC_PASSWORD.equals(name);
+	}
+
 	@Override
 	public Properties getConnectProperties() {
 		Properties ret = new Properties();
