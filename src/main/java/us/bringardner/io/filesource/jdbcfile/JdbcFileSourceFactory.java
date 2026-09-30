@@ -379,6 +379,23 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	}
 
 	/**
+	 * The same database: the same JDBC URL. Every user of a database shares its
+	 * file_source tables, so paths from such factories name the same files.
+	 */
+	@Override
+	public boolean isSameFileSystem(FileSourceFactory other) {
+		if( other == this ) {
+			return true;
+		}
+		if( !(other instanceof JdbcFileSourceFactory)) {
+			return false;
+		}
+		String mine = getConnectProperties().getProperty(JDBC_URL, "").trim();
+		String theirs = other.getConnectProperties().getProperty(JDBC_URL, "").trim();
+		return !mine.isEmpty() && mine.equals(theirs);
+	}
+
+	/**
 	 * The statement that widens a name column for the given database product
 	 * (DatabaseMetaData.getDatabaseProductName()); SQL standard syntax unless it's
 	 * MySQL/MariaDB or PostgreSQL.

@@ -34,6 +34,8 @@ import us.bringardner.io.filesource.FileSourceFilter;
 import us.bringardner.io.filesource.FileSourceRandomAccessStream;
 import us.bringardner.io.filesource.IRandomAccessStream;
 import us.bringardner.io.filesource.ISeekableInputStream;
+import java.util.ArrayDeque;
+import java.util.Deque;
 
 public class JdbcFileSource extends BaseObject implements FileSource {
 
@@ -190,12 +192,33 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	/**
 	 * 
 	 * @param factory
-	 * @param path - a clean path with dots expanded
+	 * @param path - cleaned with {@link #normalize(String)}, so "." and ".." never become names
 	 * @throws IOException
 	 */
 	public JdbcFileSource (JdbcFileSourceFactory factory, String path) throws IOException {
 		this.factory = factory;
-		initPath(path);
+		initPath(normalize(path));
+	}
+
+	/**
+	 * The path in canonical form (BJL-13): absolute, "/"-separated ("\\" counts as "/"),
+	 * no repeated or trailing separators, "." dropped and ".." removing the element
+	 * before it (".." at the root stays at the root). A JDBC file system has no links,
+	 * so this is also the canonical path. A relative path is taken from the root.
+	 */
+	public static String normalize(String path) {
+		Deque<String> parts = new ArrayDeque<>();
+		for(String part : (path == null ? "" : path).replace('\\', '/').split("/")) {
+			if( part.isEmpty() || part.equals(".")) {
+				continue;
+			}
+			if( part.equals("..")) {
+				parts.pollLast();
+			} else {
+				parts.addLast(part);
+			}
+		}
+		return "/"+String.join("/", parts);
 	}
 
 	private void initPath(String path) throws IOException {
@@ -421,6 +444,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	@Override
 	public String getCanonicalPath() throws IOException {
+		// paths are normalized when they're made and there are no links
 		return getAbsolutePath();
 	}
 
@@ -440,7 +464,13 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	@Override
 	public FileSource getChild(String arg0) throws IOException {
-		if( isDirectory()) {
+		// a path that doesn't exist yet can still get children (then mkdirs), as in
+		// the other file systems; only an existing regular file can't
+		if( isDirectory() || !exists()) {
+			if( arg0.isEmpty() || arg0.equals(".") || arg0.equals("..") || arg0.indexOf('/') >= 0 || arg0.indexOf('\\') >= 0 ) {
+				// a path, not a name: "sub/file.txt" or "../x" used to become one element
+				return new JdbcFileSource(factory, getAbsolutePath()+"/"+arg0);
+			}
 			return new JdbcFileSource(this, arg0);
 		}
 		throw new IOException("Children are not allowed ");
@@ -593,11 +623,6 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	}
 
 	@Override
-	public boolean isChildOfMine(FileSource arg0) throws IOException {
-		return arg0.getCanonicalPath().startsWith(getCanonicalPath());
-	}
-
-	@Override
 	public boolean isDirectory() throws IOException {
 		return exists() 
 				&& DIRECTORY.equals(getStringValue(JdbcFileSourceFactory.FILE_TYPE));
@@ -672,6 +697,11 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	@Override
 	public FileSource[] listFiles() throws IOException {
+		// exists() loads fileid; without it a fresh object threw a NullPointerException.
+		// Nothing there: null, as java.io.File.listFiles() returns.
+		if( !exists()) {
+			return null;
+		}
 		if( kids == null || isDirectory() || kids.hasExprired()) {
 			String sql = "select name,fileid from file_source.file where parentid=?";
 
