@@ -30,7 +30,7 @@ public class JdbcPathContractTest {
 
 	@BeforeAll
 	public static void setUp() throws Exception {
-		FileSourceAbstractTestClass.setUp(9006);
+		JdbcTestServer.setUp(9006);
 		FileSource base = factory().createFileSource(BASE);
 		assertTrue(base.getChild("root/sub").mkdirs());
 		assertTrue(base.getChild("rootX").mkdirs());
@@ -42,11 +42,11 @@ public class JdbcPathContractTest {
 
 	@AfterAll
 	static void tearDown() throws Exception {
-		FileSourceAbstractTestClass.tearDown();
+		JdbcTestServer.tearDown();
 	}
 
 	private static FileSourceFactory factory() {
-		return FileSourceAbstractTestClass.factory;
+		return JdbcTestServer.factory();
 	}
 
 	private static FileSource at(String path) throws Exception {

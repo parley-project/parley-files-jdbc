@@ -24,16 +24,16 @@ public class JdbcSchemaUpgradeTest {
 
 	@BeforeAll
 	public static void setUp() throws Exception {
-		FileSourceAbstractTestClass.setUp(9005);
+		JdbcTestServer.setUp(9005);
 	}
 
 	@AfterAll
 	static void tearDown() throws Exception {
-		FileSourceAbstractTestClass.tearDown();
+		JdbcTestServer.tearDown();
 	}
 
 	private static JdbcFileSourceFactory shared() {
-		return (JdbcFileSourceFactory) FileSourceAbstractTestClass.factory;
+		return JdbcTestServer.factory();
 	}
 
 	/** Makes the columns as narrow as before BJL-22. */
