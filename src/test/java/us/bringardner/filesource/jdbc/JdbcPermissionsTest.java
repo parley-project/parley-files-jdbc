@@ -27,22 +27,22 @@ public class JdbcPermissionsTest {
 
 	@BeforeAll
 	public static void setUp() throws Exception {
-		FileSourceAbstractTestClass.setUp(9004);
+		JdbcTestServer.setUp(9004);
 	}
 
 	@AfterAll
 	static void tearDown() throws Exception {
-		FileSourceAbstractTestClass.tearDown();
+		JdbcTestServer.tearDown();
 	}
 
 	private static FileSourceFactory factory() {
-		return FileSourceAbstractTestClass.factory;
+		return JdbcTestServer.factory();
 	}
 
 	@Test
 	public void theCurrentUserIsTheDatabaseUser() {
 		FileSourceUser me = factory().whoAmI();
-		assertEquals(FileSourceAbstractTestClass.databaseUser, me.getName());
+		assertEquals(JdbcTestServer.USER, me.getName());
 		assertTrue(me.hasGroup(JdbcFileSourceFactory.DEFAULT_GROUP));
 	}
 
