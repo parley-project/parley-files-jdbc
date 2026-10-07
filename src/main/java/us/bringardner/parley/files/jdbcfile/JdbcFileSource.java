@@ -25,12 +25,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-import javax.swing.ProgressMonitor;
 
 import us.bringardner.parley.core.BaseObject;
 import us.bringardner.parley.files.FileSource;
 import us.bringardner.parley.files.FileSourceFactory;
 import us.bringardner.parley.files.FileSourceFilter;
+import us.bringardner.parley.files.FileSourceProgress;
 import us.bringardner.parley.files.FileSourceRandomAccessStream;
 import us.bringardner.parley.files.IRandomAccessStream;
 import us.bringardner.parley.files.ISeekableInputStream;
@@ -740,7 +740,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	}
 
 	@Override
-	public FileSource[] listFiles(ProgressMonitor monitor) throws IOException {
+	public FileSource[] listFiles(FileSourceProgress monitor) throws IOException {
 		// TODO:  add monitoring
 		return listFiles();
 	}

@@ -30,7 +30,6 @@
 package us.bringardner.parley.files.jdbcfile;
 
 
-import java.awt.Component;
 import java.io.IOException;
 import java.net.URL;
 import java.sql.Connection;
@@ -41,6 +40,7 @@ import java.util.Properties;
 
 import us.bringardner.parley.files.jdbcfile.pool.JdbcConnectionPool;
 import us.bringardner.parley.files.jdbcfile.pool.ObjectPool;
+import us.bringardner.parley.files.ConnectionSetting;
 import us.bringardner.parley.files.FileSource;
 import us.bringardner.parley.files.FileSourceFactory;
 import us.bringardner.parley.files.FileSourceUser;
@@ -502,8 +502,16 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	}
 
 	@Override
-	public Component getEditPropertiesComponent() {
-		return null;
+	public List<ConnectionSetting> getConnectionSettings() {
+		return List.of(
+				ConnectionSetting.text(JDBC_CONNECTION_NAME, "Name"),
+				ConnectionSetting.text(JDBC_DRIVER, "Driver class")
+					.withDescription("Empty to let JDBC find the driver for the URL"),
+				ConnectionSetting.text(JDBC_URL, "Database URL").asRequired(),
+				ConnectionSetting.text(JDBC_USERID, "User"),
+				ConnectionSetting.secret(JDBC_PASSWORD, "Password"),
+				ConnectionSetting.text(JDBC_GROUP, "Group").withDefault(DEFAULT_GROUP).asAdvanced(),
+				ConnectionSetting.bool(JDBC_UPGRADE_SCHEMA, "Upgrade the schema").withDefault("true").asAdvanced());
 	}
 
 

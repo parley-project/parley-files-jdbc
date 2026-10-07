@@ -14,6 +14,9 @@ part of the Parley library family. The code is the same; only names changed.
 - `ServiceLoader` registration: `META-INF/services/us.bringardner.parley.files.FileSourceFactory`.
 - Module name (`Automatic-Module-Name`): `us.bringardner.parley.files.jdbcfile`.
 - Dependencies: `bjl_core`, `bjl_io` and `bjl_file_system` are now `parley-core`, `parley-io` and `parley-files`.
+- The factory describes its settings with `getConnectionSettings()` (see parley-files) instead of
+  `getEditPropertiesComponent()`; outside the `gui` package the module no longer uses Swing.
+- `listFiles(ProgressMonitor)` is now `listFiles(FileSourceProgress)`.
 
 ### Unchanged
 
