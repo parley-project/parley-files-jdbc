@@ -1,5 +1,22 @@
-# BjlFileSystemJdbc
-JDBC implementation of the FileSource interface
+# parley-files-jdbc
+
+A [parley-files](https://github.com/tony-bringardner/parley-files) `FileSource` implementation that
+keeps a file system in a database, via JDBC. Part of **Parley**, a family of Java libraries for
+implementing internet protocols. Put it on the class path and `FileSourceFactory` finds it through
+`ServiceLoader` (`JdbcFileSourceFactory`, type id `Jdbc`).
+
+```xml
+<dependency>
+    <groupId>us.bringardner.parley</groupId>
+    <artifactId>parley-files-jdbc</artifactId>
+    <version>1.0.0</version>
+</dependency>
+```
+
+> parley-files-jdbc was previously `us.bringardner:bjl_file_system_jdbc` (BjlFileSystemJdbc).
+> `us.bringardner.io.filesource.jdbcfile` is now `us.bringardner.parley.files.jdbcfile`, and the
+> connection pool `us.bringardner.database.pool` is now `us.bringardner.parley.files.jdbcfile.pool`.
+> The `jdbc*` connection properties and the database schema are unchanged.
  
 
 ## Users and permissions

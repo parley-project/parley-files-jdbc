@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <projectDescription>
-	<name>BjlFielSystemJdbc</name>
+	<name>parley-files-jdbc</name>
 	<comment></comment>
 	<projects>
 		<project>BjlCore</project>
