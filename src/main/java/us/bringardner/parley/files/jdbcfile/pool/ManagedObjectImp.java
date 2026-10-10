@@ -166,12 +166,12 @@ public class ManagedObjectImp implements IManagedObject
 				source = ex.getStackTrace();
 			}
 		}
-		if( pool != null ) {
-			synchronized (pool) {
-				// there should always be a pool
-				//  send a signal that somthing has changed.
-				pool.notify();	
-			}	
+		//  Only a connection coming back or going away can let a waiter in.  Taking one
+		//  (IN_USE) used to wake a waiter too, who then found nothing and waited again.
+		if( pool != null && (status == FREE || status == DESTROYED) ) {
+			// there should always be a pool
+			//  send a signal that somthing has changed.
+			pool.objectChanged();
 		}
 	}
 
