@@ -325,6 +325,11 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	public boolean createNewFile() throws IOException {
 		boolean ret = false;
 		if( !exists()) {
+			// as java.io.File: the directory it goes in has to be there (this was a NullPointerException
+			// for a missing parent, and "false" under a plain file)
+			if( parent == null || !parent.isDirectory()) {
+				throw new IOException("No such file or directory: "+getParent());
+			}
 			ret = executeInsert(FILE);
 		}
 		return ret;
@@ -340,7 +345,8 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		boolean ret = false;
 		if( exists()) {
 			if( isDirectory() && listFiles().length>0) {
-				throw new IOException("Can't delete directory withg children");
+				// as java.io.File: a directory that isn't empty isn't deleted, and that is false
+				return false;
 			}
 
 			String sql = "delete from file_source.file where fileid = ?";
@@ -459,7 +465,8 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	public int getChunkCount() throws IOException {
 		int ret = 0;
 		
-		if( fileid != null) {
+		// exists() looks the file up and sets fileid; a fresh handle used to answer 0 for any file
+		if( exists()) {
 			Object tmp = getFieldValue(CHUNK_COUNT,"select count(chunk_number) from file_source.file_data where fileid = ?");
 			if( tmp != null ) {
 				ret = ((Number)tmp).intValue();
@@ -709,7 +716,8 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 		long ret = 0;
 
-		if( fileid != null) {
+		// exists() looks the file up and sets fileid; a fresh handle used to answer 0 for any file
+		if( exists()) {
 			Object tmp = getFieldValue(LENGTH, "select sum(length) from file_source.file_data where fileid = ?");
 			if( tmp != null ) {
 				if (tmp instanceof Number) {
@@ -734,7 +742,8 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return ret;
 		}
 
-		return new String[0];
+		// as java.io.File: null when this isn't a directory (missing, or a plain file)
+		return null;
 	}
 
 	@Override
@@ -755,6 +764,10 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		// exists() loads fileid; without it a fresh object threw a NullPointerException.
 		// Nothing there: null, as java.io.File.listFiles() returns.
 		if( !exists()) {
+			return null;
+		}
+		// as java.io.File: a plain file has no list (it was an empty one)
+		if( !isDirectory()) {
 			return null;
 		}
 		if( kids == null || isDirectory() || kids.hasExprired()) {
@@ -805,7 +818,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		if( 
 				exists() || 
 				(parent !=null 
-				&& !parent.exists())) {
+				&& !parent.isDirectory())) {   // a directory goes in a directory (a file "exists" too)
 			return false;
 		}
 
@@ -830,16 +843,23 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	@Override
 	public boolean mkdirs() throws IOException {
-		boolean ret = exists();
-		if( !ret) {
-			if( parent == null) { 
-				ret = mkdir();
-			} else 	if( parent.mkdirs()) {
-				ret = mkdir();
-			}
+		// as java.io.File: true only if it was created (with any parents it needed); false when
+		// there is already a directory, or a file, at the path
+		if( exists()) {
+			return false;
 		}
+		return ensureDirectory();
+	}
 
-		return ret;
+	/** True if there is a directory at this path afterwards: it was there, or it and its parents were made. */
+	private boolean ensureDirectory() throws IOException {
+		if( exists()) {
+			return isDirectory();
+		}
+		if( parent != null && !parent.ensureDirectory()) {
+			return false;
+		}
+		return mkdir();
 	}
 
 	@Override
@@ -855,7 +875,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 				JdbcFileSource file = (JdbcFileSource) arg0;
 				//  Can't rename root or rename to root
 				if( parent != null && file.parent != null) {
-					if(file.parent.fileid != null || file.parent.mkdirs()) {
+					if(file.parent.fileid != null || file.parent.ensureDirectory()) {
 						String sql = "update file_source.file set parentid = ? , name = ? where fileid=?";
 						if((executeUpdate(sql, file.parent.fileid,file.name,fileid)==1)) {
 							fileid = null;
