@@ -2,6 +2,7 @@ package us.bringardner.parley.files.jdbcfile;
 
 import static us.bringardner.parley.files.jdbcfile.JdbcFileSourceFactory.seperatorChar;
 
+import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -618,6 +619,11 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 
 		if( !exists()) {
+			// as a FileOutputStream: the directory above must be there, and be a directory
+			FileSource above = getParentFile();
+			if( above == null || !above.isDirectory() ) {
+				throw new FileNotFoundException(getAbsolutePath() + " (No such file or directory)");
+			}
 			if(!executeInsert(FILE)) {
 				throw new IOException("Can't create the file ");
 			}
