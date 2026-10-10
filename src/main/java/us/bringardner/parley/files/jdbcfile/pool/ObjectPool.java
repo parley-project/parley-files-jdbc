@@ -82,6 +82,10 @@ abstract public class ObjectPool implements Runnable {
 	private boolean debug = isDefDebug();
 
 	private ArrayList<IManagedObject> pool= new ArrayList<IManagedObject>(getDefaultMax());
+	//  Objects being created right now: they count against max but are not in the pool yet.
+	//  Both fields are guarded by the lock on 'pool'.
+	private int creating;
+	private long destroyGeneration;
 	//  Read by the threads that wait for the pool, written by its own thread
 	private volatile boolean running = false;
 	private volatile boolean started = false;
@@ -96,6 +100,7 @@ abstract public class ObjectPool implements Runnable {
 		IManagedObject obj = null;
 
 		synchronized (pool) {
+			destroyGeneration++;
 
 			for(int i=0, sz=pool.size(); i<sz; i++ ) {
 				obj = (IManagedObject)pool.get(i);
@@ -217,6 +222,17 @@ abstract public class ObjectPool implements Runnable {
 	 * notify the pool itself, which nobody waits on, and a waiter always slept its whole
 	 * {@link #getTimeToSleep()}).
 	 */
+	/**
+	 * Wait for objectChanged(), at most timeToSleep and never past maxTime. The caller holds the lock on pool.
+	 *  A release wakes us at once (see ManagedObjectImp.setStatus); the limit is only a safety net.
+	 */
+	private void waitForChange(long maxTime) throws InterruptedException {
+		long left = maxTime-System.currentTimeMillis();
+		if( left > 0 ) {
+			pool.wait(Math.max(1, Math.min(timeToSleep, left)));
+		}
+	}
+
 	void objectChanged() {
 		synchronized (pool) {
 			pool.notify();
@@ -233,12 +249,14 @@ abstract public class ObjectPool implements Runnable {
 		IManagedObject ret = null;
 		IManagedObject mo = null;
 		String message = "Nothing attempted";
+		long maxTime = System.currentTimeMillis()+timeToWait;
 
+		while( ret == null && System.currentTimeMillis()< maxTime ) {
+			boolean create = false;
+			long generation;
 
-		synchronized (pool) {			
-			long maxTime = System.currentTimeMillis()+timeToWait;
-
-			while( ret == null && System.currentTimeMillis()< maxTime ) {
+			synchronized (pool) {
+				generation = destroyGeneration;
 				for(int i=0; i< pool.size(); i++ ) {
 					mo = (IManagedObject)pool.get(i);
 					if( mo.isDestroyed() ) {
@@ -255,30 +273,65 @@ abstract public class ObjectPool implements Runnable {
 					}
 				}
 
-				if( ret == null ){
-					if( pool.size() < max) {
-						if( (ret = createObject()) != null ) {
-							ret.setPool(this);
-							pool.add(ret);
-							if(debug|| pool.size()>=autoDebug){
-								ret.setCaptureSource(true);
-							}
-						} else {
-							message = "Attempt to create object failed";
+				if( ret != null ) {
+					ret.setInUse();
+				} else if( pool.size()+creating < max ) {
+					//  Reserve the slot, then create outside the lock: opening a connection
+					//  can take seconds and must not hold up everyone else's get and release.
+					creating++;
+					create = true;
+				} else {
+					message = "Pool size("+(pool.size()+creating)+" is > max("+max+")";
+					waitForChange(maxTime);
+				}
+			}
+
+			if( create ) {
+				IManagedObject made = null;
+				Throwable failure = null;
+				try {
+					made = createObject();
+				} catch(Throwable ex) {
+					failure = ex;
+				}
+
+				boolean destroyedMeanwhile = false;
+				synchronized (pool) {
+					creating--;
+					if( made != null && generation != destroyGeneration ) {
+						//  destroyAll() ran while we were connecting
+						destroyedMeanwhile = true;
+					} else if( made != null ) {
+						made.setPool(this);
+						pool.add(made);
+						if(debug|| pool.size()>=autoDebug){
+							made.setCaptureSource(true);
 						}
+						made.setInUse();
+						ret = made;
 					} else {
-						message = "Pool size("+pool.size()+" is > max("+max+")";
+						message = "Attempt to create object failed";
+						//  the slot is free again
+						pool.notify();
 					}
 				}
 
-				if( ret != null ) {
-					ret.setInUse();
-				} else {
-					//  A release wakes us at once (see ManagedObjectImp.setStatus); this
-					//  is only a safety net, so don't let it run past the deadline.
-					long left = maxTime-System.currentTimeMillis();
-					if( left > 0 ) {
-						pool.wait(Math.max(1, Math.min(timeToSleep, left)));
+				if( destroyedMeanwhile ) {
+					try {
+						destroyObject(made.getObject());
+					} catch(Exception ex) {}
+					throw new ObjectCreateException("The pool was destroyed while an object was being created");
+				}
+				if( failure != null ) {
+					if( failure instanceof Exception ) {
+						throw (Exception) failure;
+					}
+					throw (Error) failure;
+				}
+				if( ret == null ) {
+					//  createObject() answered null: don't ask again in a tight loop
+					synchronized (pool) {
+						waitForChange(maxTime);
 					}
 				}
 			}
