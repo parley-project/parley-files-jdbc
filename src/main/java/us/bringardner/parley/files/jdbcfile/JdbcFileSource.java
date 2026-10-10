@@ -77,6 +77,16 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	private static final long serialVersionUID = 1L;
 	static final String FILE = "file";
 	static final String DIRECTORY = "dir";
+	/**
+	 * A symbolic link: a row whose content (chunk 1) is the path it points to, as on POSIX.
+	 * No column was added, so databases that exist keep working.
+	 */
+	static final String LINK = "link";
+	/**
+	 * A hard link: a row that is one more name for a file. Its content (chunk 1) is the file id
+	 * of the row that holds the data. When that row is deleted a hard link takes the data over.
+	 */
+	static final String HARD = "hard";
 
 
 	static final String NAME = "name";
@@ -132,9 +142,10 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			FieldValue val = fieldCache.get(name);
 
 			if( val == null || val.hasExprired() ) {
+				long id = rowId();   // of the file this answers for (a link's target), before a connection is held
 				try(Connection con = factory.getConnection()) {
 					try(PreparedStatement pstmt = con.prepareStatement(sql)) {
-						pstmt.setLong(1, fileid);
+						pstmt.setLong(1, id);
 						try (ResultSet rs = pstmt.executeQuery()) {
 							if( rs.next()) {
 								ret = rs.getObject(1);
@@ -206,8 +217,8 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	/**
 	 * The path in canonical form (BJL-13): absolute, "/"-separated ("\\" counts as "/"),
 	 * no repeated or trailing separators, "." dropped and ".." removing the element
-	 * before it (".." at the root stays at the root). A JDBC file system has no links,
-	 * so this is also the canonical path. A relative path is taken from the root.
+	 * before it (".." at the root stays at the root). Links are not followed (see
+	 * {@link #getCanonicalPath()}). A relative path is taken from the root.
 	 */
 	public static String normalize(String path) {
 		Deque<String> parts = new ArrayDeque<>();
@@ -325,7 +336,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	@Override
 	public boolean createNewFile() throws IOException {
 		boolean ret = false;
-		if( !exists()) {
+		if( !rowExists()) {
 			// as java.io.File: the directory it goes in has to be there (this was a NullPointerException
 			// for a missing parent, and "false" under a plain file)
 			if( parent == null || !parent.isDirectory()) {
@@ -344,23 +355,35 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	@Override
 	public boolean delete() throws IOException {
 		boolean ret = false;
-		if( exists()) {
-			if( isDirectory() && listFiles().length>0) {
+		// this path's own row: deleting a link removes the link, never what it points to
+		if( rowExists()) {
+			String type = ownType();
+			boolean link = isLinkType(type);
+			if( !link && isDirectory() && listFiles().length>0) {
 				// as java.io.File: a directory that isn't empty isn't deleted, and that is false
 				return false;
 			}
-
+			boolean moved = !link && FILE.equals(type) && passContentToAHardLink();
 			String sql = "delete from file_source.file where fileid = ?";
-			if( executeUpdate(sql, fileid)== 1) {
-				truncate();
+			long id = fileid;
+			if( executeUpdate(sql, id)== 1) {
+				if( !moved ) {
+					try(Connection con = factory.getConnection();
+							PreparedStatement pstmt = con.prepareStatement("delete from file_source.file_data where fileid=?")) {
+						pstmt.setLong(1, id);
+						pstmt.executeUpdate();
+					} catch (SQLException e) {
+						throw new IOException(e);
+					}
+				}
 				fileid = null;
+				forgetResolution();
 				if( parent != null) {
 					parent.dereferenceChilderen();
 				}
 				ret = true;
 			}
 		}
-
 		return ret;
 	}
 
@@ -369,8 +392,30 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		kids = null;
 	}
 
+	/**
+	 * As java.io.File: a symbolic link exists if what it points at does (one that points at
+	 * nothing is there, but doesn't exist). {@link #rowExists()} is whether this path has an
+	 * entry of its own.
+	 */
 	@Override
 	public boolean exists() throws IOException {
+		JdbcFileSource r = resolve();
+		if( r != this ) {
+			return r.exists();
+		}
+		if( !rowExists() ) {
+			return false;
+		}
+		// a link that could not be followed (a loop, or the file it shared is gone) isn't a file
+		return !factory.linksPossible() || !isLinkType(ownType());
+	}
+
+	private static boolean isLinkType(String type) {
+		return LINK.equals(type) || HARD.equals(type);
+	}
+
+	/** This path has a row of its own: a file, a directory, or a link (also one that points at nothing). */
+	private boolean rowExists() throws IOException {
 
 		// already been queried
 		if(fileid != null) {
@@ -385,7 +430,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			if( !parent.exists()) {
 				return false;
 			} else {
-				pid = parent.fileid;
+				pid = parent.rowId();   // a linked directory holds what is below it
 			}
 		} 
 
@@ -459,8 +504,266 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	@Override
 	public String getCanonicalPath() throws IOException {
-		// paths are normalized when they're made and there are no links
-		return getAbsolutePath();
+		return canonicalPath(0);
+	}
+
+	/** As java.io.File: a symbolic link, or a path through a linked directory, resolves to the target's path. */
+	private String canonicalPath(int depth) throws IOException {
+		if( depth > 40 ) {
+			throw new IOException("Too many levels of symbolic links: " + getAbsolutePath());
+		}
+		if( factory.linksPossible() && rowExists() && LINK.equals(ownType()) ) {
+			return linkTarget().canonicalPath(depth+1);
+		}
+		if( parent == null ) {
+			return "/";
+		}
+		String p = parent.canonicalPath(depth+1);
+		return p.equals("/") ? "/" + name : p + "/" + name;
+	}
+
+	@NotAField()
+	private transient JdbcFileSource resolvedHandle;
+	@NotAField()
+	private transient long resolvedAt;
+	/** How long the answer of {@link #resolve()} is kept. */
+	private static final long RESOLVE_TTL = 2000;
+
+	private void forgetResolution() {
+		resolvedHandle = null;
+	}
+
+	/**
+	 * The path whose row answers for this one: what a symbolic link points at (which may not
+	 * exist), the row that holds the data of a hard link, or this. Nothing below is looked up
+	 * until some link has been seen in the database.
+	 */
+	private JdbcFileSource resolve() throws IOException {
+		if( !factory.linksPossible() ) {
+			return this;
+		}
+		JdbcFileSource r = resolvedHandle;
+		if( r != null && System.currentTimeMillis() - resolvedAt < RESOLVE_TTL ) {
+			return r;
+		}
+		r = resolve(0);
+		resolvedHandle = r;
+		resolvedAt = System.currentTimeMillis();
+		return r;
+	}
+
+	private JdbcFileSource resolve(int depth) throws IOException {
+		if( depth > 40 || !rowExists() ) {
+			return this;
+		}
+		String type = ownType();
+		if( LINK.equals(type) ) {
+			return linkTarget().resolve(depth+1);
+		}
+		if( HARD.equals(type) ) {
+			JdbcFileSource owner = factory.handleForId(hardOwnerId());
+			return owner == null ? this : owner;
+		}
+		return this;
+	}
+
+	/** The type of this row, whatever it is (the answer for a link is not looked through). */
+	private String ownType() throws IOException {
+		FieldValue val = fieldCache.get("own_type");
+		if( val == null || val.hasExprired() ) {
+			String type = null;
+			try(Connection con = factory.getConnection()) {
+				try(PreparedStatement pstmt = con.prepareStatement("select file_type from file_source.file where fileid = ?")) {
+					pstmt.setLong(1, fileid);
+					try (ResultSet rs = pstmt.executeQuery()) {
+						if( rs.next() ) {
+							type = rs.getString(1);
+						}
+					}
+				}
+			} catch (SQLException e) {
+				throw new IOException(e);
+			}
+			val = new NamedField("own_type", type);
+			fieldCache.put("own_type", val);
+		}
+		return (String) val.value;
+	}
+
+	/** What is stored in this row's own first chunk: where a link points. */
+	private String ownContent() throws IOException {
+		try(Connection con = factory.getConnection()) {
+			try(PreparedStatement pstmt = con.prepareStatement(
+					"select data from file_source.file_data where fileid = ? and chunk_number = 1")) {
+				pstmt.setLong(1, fileid);
+				try (ResultSet rs = pstmt.executeQuery()) {
+					if( rs.next() ) {
+						byte[] b = rs.getBytes(1);
+						return b == null ? "" : new String(b, java.nio.charset.StandardCharsets.UTF_8);
+					}
+				}
+			}
+		} catch (SQLException e) {
+			throw new IOException(e);
+		}
+		return "";
+	}
+
+	private JdbcFileSource linkTarget() throws IOException {
+		return (JdbcFileSource) factory.createFileSource(ownContent());
+	}
+
+	private long hardOwnerId() throws IOException {
+		try {
+			return Long.parseLong(ownContent().trim());
+		} catch (NumberFormatException e) {
+			return -1;
+		}
+	}
+
+	/** The id of the row that answers for this path. It is for a file that exists (or is about to). */
+	private long rowId() throws IOException {
+		JdbcFileSource r = resolve();
+		if( r.fileid == null && !r.rowExists() ) {
+			throw new FileNotFoundException(r.getAbsolutePath() + " (No such file or directory)");
+		}
+		return r.fileid;
+	}
+
+	/**
+	 * Makes this path a link to existing.
+	 * @param hard true for a second name for the file, false for a symbolic link
+	 */
+	void makeLink(JdbcFileSource existing, boolean hard) throws IOException {
+		if( rowExists() ) {
+			throw new java.nio.file.FileAlreadyExistsException(getAbsolutePath());
+		}
+		if( parent == null || !parent.isDirectory() ) {
+			throw new java.nio.file.NoSuchFileException(getAbsolutePath());
+		}
+		String content;
+		if( hard ) {
+			JdbcFileSource owner = existing.resolve();   // a link to a link is a link to the file
+			if( !owner.isFile() ) {
+				throw new java.nio.file.NoSuchFileException(existing.getAbsolutePath());
+			}
+			content = Long.toString(owner.rowId());
+		} else {
+			content = existing.getAbsolutePath();
+		}
+		factory.linksMade();
+		forgetResolution();
+		if( !executeInsert(hard ? HARD : LINK) || !rowExists() ) {
+			throw new IOException("Can't create the link " + getAbsolutePath());
+		}
+		byte[] bytes = content.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+		try(Connection con = factory.getConnection()) {
+			try(PreparedStatement pstmt = con.prepareStatement(
+					"insert into file_source.file_data (chunk_number,fileid,length,data) values(1,?,?,?)")) {
+				pstmt.setLong(1, fileid);
+				pstmt.setInt(2, bytes.length);
+				pstmt.setBytes(3, bytes);
+				pstmt.executeUpdate();
+			}
+			try(PreparedStatement pstmt = con.prepareStatement(
+					"update file_source.file set chunk_count = 1, length = ? where fileid = ?")) {
+				pstmt.setLong(1, bytes.length);
+				pstmt.setLong(2, fileid);
+				pstmt.executeUpdate();
+			}
+		} catch (SQLException e) {
+			throw new IOException(e);
+		}
+		fieldCache.clear();
+		parent.dereferenceChilderen();
+	}
+
+	/**
+	 * Called when this file's row is going away: the first hard link to it takes over its data
+	 * and attributes, so the file outlives the name that held it, and the other hard links
+	 * follow it.
+	 * @return true if the data went to a hard link (and so is not to be deleted)
+	 */
+	private boolean passContentToAHardLink() throws IOException {
+		if( !factory.linksPossible() ) {
+			return false;
+		}
+		List<Long> peers = new ArrayList<>();
+		try(Connection con = factory.getConnection()) {
+			try(PreparedStatement pstmt = con.prepareStatement(
+					"select f.fileid, d.data from file_source.file f join file_source.file_data d "
+							+ "on d.fileid = f.fileid and d.chunk_number = 1 where f.file_type = ?")) {
+				pstmt.setString(1, HARD);
+				try(ResultSet rs = pstmt.executeQuery()) {
+					while( rs.next() ) {
+						byte[] b = rs.getBytes(2);
+						if( b != null && Long.toString(fileid).equals(new String(b, java.nio.charset.StandardCharsets.UTF_8).trim()) ) {
+							peers.add(rs.getLong(1));
+						}
+					}
+				}
+			}
+		} catch (SQLException e) {
+			throw new IOException(e);
+		}
+		if( peers.isEmpty() ) {
+			return false;
+		}
+		long heir = peers.remove(0);
+		try(Connection con = factory.getConnection()) {
+			// the heir's pointer goes, its data and attributes are this row's
+			try(PreparedStatement pstmt = con.prepareStatement("delete from file_source.file_data where fileid = ?")) {
+				pstmt.setLong(1, heir);
+				pstmt.executeUpdate();
+			}
+			try(PreparedStatement pstmt = con.prepareStatement("update file_source.file_data set fileid = ? where fileid = ?")) {
+				pstmt.setLong(1, heir);
+				pstmt.setLong(2, fileid);
+				pstmt.executeUpdate();
+			}
+			String[] cols = {LENGTH, CHUNK_COUNT, OWNER, GROUP_NAME, CREATE_TIME, LAST_ACCESS_DATE, LAST_MODIFIED_DATE,
+					OWNER_READABLE, OWNER_WRITEABLE, OWNER_EXECUTABLE, GROUP_READABLE, GROUP_WRITEABLE, GROUP_EXECUTABLE,
+					OTHER_READABLE, OTHER_WRITEABLE, OTHER_EXECUTABLE};
+			Object[] values = new Object[cols.length];
+			try(PreparedStatement pstmt = con.prepareStatement(
+					"select " + String.join(",", cols) + " from file_source.file where fileid = ?")) {
+				pstmt.setLong(1, fileid);
+				try(ResultSet rs = pstmt.executeQuery()) {
+					if( rs.next() ) {
+						for(int i = 0; i < cols.length; i++) {
+							values[i] = rs.getObject(i+1);
+						}
+					}
+				}
+			}
+			StringBuilder set = new StringBuilder("update file_source.file set file_type = ?");
+			for(String c : cols) {
+				set.append(", ").append(c).append(" = ?");
+			}
+			set.append(" where fileid = ?");
+			try(PreparedStatement pstmt = con.prepareStatement(set.toString())) {
+				pstmt.setString(1, FILE);
+				for(int i = 0; i < cols.length; i++) {
+					pstmt.setObject(i+2, values[i]);
+				}
+				pstmt.setLong(cols.length+2, heir);
+				pstmt.executeUpdate();
+			}
+			// the other names now point at the heir
+			byte[] pointer = Long.toString(heir).getBytes(java.nio.charset.StandardCharsets.UTF_8);
+			for(long other : peers) {
+				try(PreparedStatement pstmt = con.prepareStatement(
+						"update file_source.file_data set data = ?, length = ? where fileid = ? and chunk_number = 1")) {
+					pstmt.setBytes(1, pointer);
+					pstmt.setInt(2, pointer.length);
+					pstmt.setLong(3, other);
+					pstmt.executeUpdate();
+				}
+			}
+		} catch (SQLException e) {
+			throw new IOException(e);
+		}
+		return true;
 	}
 
 	public int getChunkCount() throws IOException {
@@ -508,7 +811,11 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	}
 
 	public long getFileId() {
-		return fileid;
+		try {
+			return rowId();
+		} catch (IOException e) {
+			throw new IllegalStateException(e);
+		}
 	}
 
 	@Override
@@ -544,6 +851,9 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	@Override
 	public FileSource getLinkedTo() throws IOException {
+		if( factory.linksPossible() && rowExists() && LINK.equals(ownType()) ) {
+			return linkTarget();
+		}
 		return null;
 	}
 
@@ -613,6 +923,10 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	/** @param chunkSize the rows this stream stores, or 0 for the factory's chunk size */
 	private OutputStream openOutput(boolean append, int chunkSize) throws IOException {
+		JdbcFileSource r = resolve();
+		if( r != this ) {
+			return r.openOutput(append, chunkSize);   // a link that points at nothing creates its target
+		}
 		if(isDirectory()) {
 			throw new IOException("Cannot write to a directory");
 		}
@@ -779,10 +1093,11 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		if( kids == null || isDirectory() || kids.hasExprired()) {
 			String sql = "select name,fileid from file_source.file where parentid=?";
 
+			long dirId = rowId();   // a linked directory lists what is in the one it links to
 			try {
 				try(Connection con = factory.getConnection()) {
 					try(PreparedStatement pstmt = con.prepareStatement(sql)) {
-						pstmt.setLong(1, fileid);
+						pstmt.setLong(1, dirId);
 						try(ResultSet rs = pstmt.executeQuery()) {
 							List<JdbcFileSource> list = new ArrayList<>();
 							while(rs.next()) {
@@ -822,7 +1137,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	@Override
 	public boolean mkdir() throws IOException {
 		if( 
-				exists() || 
+				rowExists() || 
 				(parent !=null 
 				&& !parent.isDirectory())) {   // a directory goes in a directory (a file "exists" too)
 			return false;
@@ -843,7 +1158,8 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		// as a file made with the usual umask: only a directory starts executable
 		String sql = "insert into file_source.file (name,parentid,owner,file_type,"+OWNER_EXECUTABLE+") values(?,?,?,?,?)";
 
-		long pid = parent == null ? 0 : parent.fileid;
+		long pid = parent == null ? 0 : parent.rowId();
+		forgetResolution();
 		return executeUpdate(sql, name,pid,owner,file_type, DIRECTORY.equals(file_type)) == 1;
 	}
 
@@ -851,8 +1167,8 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	@Override
 	public boolean mkdirs() throws IOException {
 		// as java.io.File: true only if it was created (with any parents it needed); false when
-		// there is already a directory, or a file, at the path
-		if( exists()) {
+		// there is already an entry (a directory, a file or a link) at the path
+		if( rowExists()) {
 			return false;
 		}
 		return ensureDirectory();
@@ -860,7 +1176,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	/** True if there is a directory at this path afterwards: it was there, or it and its parents were made. */
 	private boolean ensureDirectory() throws IOException {
-		if( exists()) {
+		if( rowExists()) {
 			return isDirectory();
 		}
 		if( parent != null && !parent.ensureDirectory()) {
@@ -876,30 +1192,25 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	@Override
 	public boolean renameTo(FileSource arg0) throws IOException {
 		boolean ret = false;
-
-		if( exists() && parent != null && equals(arg0) ) {
-			// as java.io.File: renaming a file to itself is a success that changes nothing
+		// the entry of this path itself: a link is moved, not what it points to
+		if( rowExists() && parent != null && equals(arg0) ) {
 			return true;
 		}
-		if(exists() && !arg0.exists()) {
-			if (arg0 instanceof JdbcFileSource) {
-				JdbcFileSource file = (JdbcFileSource) arg0;
-				//  Can't rename root or rename to root
-				if( parent != null && file.parent != null) {
-					// as java.io.File: the directory it goes in has to be there. This made it, and
-					// then moved the file to the new directory's fileid before that had been
-					// looked up (null), which left the file without a parent: gone from every listing.
-					if(file.parent.isDirectory() && file.parent.fileid != null) {
-						String sql = "update file_source.file set parentid = ? , name = ? where fileid=?";
-						if((executeUpdate(sql, file.parent.fileid,file.name,fileid)==1)) {
-							fileid = null;
-							ret = arg0.exists();
-						}
+		if(rowExists() && arg0 instanceof JdbcFileSource) {
+			JdbcFileSource file = (JdbcFileSource) arg0;
+			if( !file.rowExists() && parent != null && file.parent != null) {
+				if(file.parent.isDirectory()) {
+					String sql = "update file_source.file set parentid = ? , name = ? where fileid=?";
+					long destParent = file.parent.rowId();
+					if((executeUpdate(sql, destParent,file.name,fileid)==1)) {
+						fileid = null;
+						forgetResolution();
+						file.forgetResolution();
+						ret = file.rowExists();
 					}
 				}
 			}
 		}
-
 		return ret;
 	}
 
@@ -910,7 +1221,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return false;
 		}
 		String sql = "update file_source.file set create_time=? where fileid=?";
-		if( executeUpdate(sql, new Timestamp(arg0),fileid) != 1) {
+		if( executeUpdate(sql, new Timestamp(arg0),rowId()) != 1) {
 			return false;
 		};
 		return true;
@@ -932,7 +1243,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return setOwnerExecutable(arg0);
 		}
 		String sql = "update file_source.file set owner_executable = ?, group_executable = ?, other_executable = ? where fileid = ?";
-		return executeUpdate(sql, arg0, arg0, arg0, fileid) == 1;
+		return executeUpdate(sql, arg0, arg0, arg0, rowId()) == 1;
 	}
 
 	@Override
@@ -942,7 +1253,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return false;
 		}
 		String sql = "update file_source.file set group_name = ? where fileid = ?";
-		if(executeUpdate(sql,arg0,fileid) != 1) {
+		if(executeUpdate(sql,arg0,rowId()) != 1) {
 			return false;
 		}
 		return true;
@@ -955,7 +1266,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return false;
 		}
 		String sql = "update file_source.file set group_executable = ? where fileid = ?";
-		if(executeUpdate(sql,arg0,fileid) != 1) {
+		if(executeUpdate(sql,arg0,rowId()) != 1) {
 			return false;
 		}
 		return true;
@@ -985,7 +1296,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return false;
 		}
 		String sql = "update file_source.file set group_readable = ? where fileid = ?";
-		if(executeUpdate(sql,arg0,fileid) != 1) {
+		if(executeUpdate(sql,arg0,rowId()) != 1) {
 			return false;
 		}
 		return true;
@@ -998,7 +1309,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return false;
 		}
 		String sql = "update file_source.file set group_writeable = ? where fileid = ?";
-		if(executeUpdate(sql,arg0,fileid) != 1) {
+		if(executeUpdate(sql,arg0,rowId()) != 1) {
 			return  false;
 		}
 		return true;
@@ -1009,7 +1320,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		if(exists() ) {
 			Timestamp ts = new Timestamp(arg0);
 			String sql = "update file_source.file set last_access_date = ?,last_modified_date=? where fileid = ?";
-			if(executeUpdate(sql,ts,ts,fileid) !=1) {
+			if(executeUpdate(sql,ts,ts,rowId()) !=1) {
 				return false;
 			}
 		}
@@ -1023,7 +1334,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return false;
 		}
 		String sql = "update file_source.file set last_access_date = ? where fileid = ?";
-		if(executeUpdate(sql,new Timestamp(arg0),fileid) !=1) {
+		if(executeUpdate(sql,new Timestamp(arg0),rowId()) !=1) {
 			return false;
 		}
 		return true;
@@ -1038,7 +1349,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		}
 		Timestamp time = new Timestamp(arg0);
 		String sql = "update file_source.file set "+LAST_MODIFIED_DATE+" = ? where fileid = ?";
-		if( executeUpdate(sql,time,fileid) !=1) {
+		if( executeUpdate(sql,time,rowId()) !=1) {
 			return false;
 		}
 		setFieldCache(LAST_MODIFIED_DATE, time);
@@ -1052,7 +1363,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return false;
 		}
 		String sql = "update file_source.file set other_executable = ? where fileid = ?";
-		if( executeUpdate(sql,arg0,fileid) !=1) {
+		if( executeUpdate(sql,arg0,rowId()) !=1) {
 			return false;
 		}
 		return true;
@@ -1065,7 +1376,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return false;
 		}
 		String sql = "update file_source.file set other_readable = ? where fileid = ?";
-		if(executeUpdate(sql,arg0,fileid)!=1) {
+		if(executeUpdate(sql,arg0,rowId())!=1) {
 			return false;
 		}
 		return true;
@@ -1078,7 +1389,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return false;
 		}
 		String sql = "update file_source.file set other_writeable = ? where fileid = ?";
-		if(executeUpdate(sql,arg0,fileid)!=1) {
+		if(executeUpdate(sql,arg0,rowId())!=1) {
 			return false;
 		}
 		return true;
@@ -1091,7 +1402,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return false;
 		}
 		String sql = "update file_source.file set owner = ? where fileid = ?";
-		if(executeUpdate(sql,arg0.getName(),fileid)!=1) {
+		if(executeUpdate(sql,arg0.getName(),rowId())!=1) {
 			return false;
 		}
 		return true;
@@ -1104,7 +1415,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return false;
 		}
 		String sql = "update file_source.file set owner_executable = ? where fileid = ?";
-		if(executeUpdate(sql,arg0,fileid)!=1) {
+		if(executeUpdate(sql,arg0,rowId())!=1) {
 			return false;
 		}
 		return true;
@@ -1117,7 +1428,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return false;
 		}
 		String sql = "update file_source.file set owner_readable = ? where fileid = ?";
-		if(executeUpdate(sql,arg0,fileid)!=1) {
+		if(executeUpdate(sql,arg0,rowId())!=1) {
 			return false;
 		}
 		return true;
@@ -1130,7 +1441,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return false;
 		}
 		String sql = "update file_source.file set owner_writeable = ? where fileid = ?";
-		if(executeUpdate(sql,arg0,fileid)!=1) {
+		if(executeUpdate(sql,arg0,rowId())!=1) {
 			return false;
 		}
 		return true;
@@ -1145,7 +1456,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		}
 		String sql = "update file_source.file set "+OWNER_WRITEABLE+" = ?, "+GROUP_WRITEABLE+" = ?, "
 				+OTHER_WRITEABLE+" = ? where fileid = ?";
-		return executeUpdate(sql, false, false, false, fileid) == 1;
+		return executeUpdate(sql, false, false, false, rowId()) == 1;
 	}
 
 	@Override
@@ -1164,7 +1475,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return setOwnerReadable(arg0);
 		}
 		String sql = "update file_source.file set owner_readable = ?, group_readable = ?, other_readable = ? where fileid = ?";
-		return executeUpdate(sql, arg0, arg0, arg0, fileid) == 1;
+		return executeUpdate(sql, arg0, arg0, arg0, rowId()) == 1;
 	}
 
 	@Override
@@ -1193,7 +1504,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return setOwnerWritable(arg0);
 		}
 		String sql = "update file_source.file set owner_writeable = ?, group_writeable = ?, other_writeable = ? where fileid = ?";
-		return executeUpdate(sql, arg0, arg0, arg0, fileid) == 1;
+		return executeUpdate(sql, arg0, arg0, arg0, rowId()) == 1;
 	}
 
 	@Override
@@ -1251,10 +1562,11 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 		long len = length();
 		if( len > 0 ) {
+			long id = rowId();
 			try(Connection con = factory.getConnection()) {
 				Timestamp time = new Timestamp(System.currentTimeMillis());
 				try(PreparedStatement pstmt = con.prepareStatement("delete from file_source.file_data where fileid=?")) {
-					pstmt.setLong(1, fileid);
+					pstmt.setLong(1, id);
 					pstmt.executeUpdate();					
 				}
 
@@ -1277,13 +1589,14 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	public void appendData(int length,byte[] data) throws IOException {
 		long chunk = getChunkCount()+1;
+		long id = rowId();
 		try(Connection con = factory.getConnection()) {
 			try(PreparedStatement pstmt = con.prepareStatement("insert into file_source.file_data "
 					+ "(chunk_number,fileid,length,data) "
 					+ "values(?,?,?,?)")) 
 			{
 				pstmt.setLong(1, chunk);
-				pstmt.setLong(2, fileid);
+				pstmt.setLong(2, id);
 				pstmt.setInt(3, length);
 				pstmt.setBytes(4, data);
 
@@ -1299,7 +1612,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 										+ " where chunk_number=? and fileid=?")) {
 
 							pstmt2.setLong(1, chunk);
-							pstmt2.setLong(2, fileid);
+							pstmt2.setLong(2, id);
 
 							if( pstmt2.executeUpdate()==1) {
 								if(pstmt.executeUpdate()!=1) {
@@ -1320,7 +1633,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 				pstmt.setLong(2, length);
 				pstmt.setTimestamp(3, time);
 				pstmt.setTimestamp(4, time);
-				pstmt.setLong(5, fileid);
+				pstmt.setLong(5, id);
 				if(pstmt.executeUpdate()!=1) {
 					throw new IOException("Counld not update chunk count");
 				}
@@ -1338,11 +1651,12 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		byte [] ret = null;
 		int max = getChunkCount();
 		if( max >= chunk) {
+			long id = rowId();
 			try(Connection con = factory.getConnection()) {
 				try(PreparedStatement pstmt = con.prepareStatement(
 						"select length,data from file_source.file_data where chunk_number=? and fileid=? ")) {
 					pstmt.setLong(1, chunk);
-					pstmt.setLong(2, fileid);
+					pstmt.setLong(2, id);
 					try(ResultSet rs = pstmt.executeQuery()) {
 						if( rs.next()) {
 							int len = rs.getInt(1);

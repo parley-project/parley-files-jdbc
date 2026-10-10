@@ -45,6 +45,7 @@ import us.bringardner.parley.files.FileSource;
 import us.bringardner.parley.files.FileSourceFactory;
 import us.bringardner.parley.files.FileSourceUser;
 import java.sql.DatabaseMetaData;
+import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.util.ArrayList;
@@ -674,18 +675,99 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	}
 
 
+	// ---- links (see JdbcFileSource.LINK and HARD)
+
+	/** Set once a link is known to exist, so a database that has none costs nothing. */
+	private volatile boolean linksKnown;
+	private volatile long linksCheckedAt;
+	/** How long "there are no links" is believed: another client may make one. */
+	private static final long LINK_CHECK_INTERVAL = 2000;
+
+	/** @return true once the database is known to hold a link; a link made by another client is seen within a couple of seconds */
+	boolean linksPossible() {
+		if( linksKnown ) {
+			return true;
+		}
+		long now = System.currentTimeMillis();
+		if( now - linksCheckedAt < LINK_CHECK_INTERVAL ) {
+			return false;
+		}
+		linksCheckedAt = now;
+		try(Connection con = getConnection();
+				PreparedStatement pstmt = con.prepareStatement(
+						"select fileid from file_source.file where file_type = ? or file_type = ?")) {
+			pstmt.setString(1, JdbcFileSource.LINK);
+			pstmt.setString(2, JdbcFileSource.HARD);
+			pstmt.setMaxRows(1);
+			try(ResultSet rs = pstmt.executeQuery()) {
+				if( rs.next() ) {
+					linksKnown = true;
+				}
+			}
+		} catch (SQLException | IOException e) {
+			// can't tell: treat it as none until the next look
+		}
+		return linksKnown;
+	}
+
+	void linksMade() {
+		linksKnown = true;
+	}
+
+	/** A handle for the row with this id, or null if there is none. */
+	JdbcFileSource handleForId(long id) throws IOException {
+		java.util.ArrayDeque<String> names = new java.util.ArrayDeque<>();
+		long at = id;
+		for(int guard = 0; at != 0 && guard < 256; guard++) {
+			String name = null;
+			long parent = 0;
+			boolean found = false;
+			try(Connection con = getConnection();
+					PreparedStatement pstmt = con.prepareStatement("select name,parentid from file_source.file where fileid = ?")) {
+				pstmt.setLong(1, at);
+				try(ResultSet rs = pstmt.executeQuery()) {
+					if( rs.next() ) {
+						found = true;
+						name = rs.getString(1);
+						parent = rs.getLong(2);
+					}
+				}
+			} catch (SQLException e) {
+				throw new IOException(e);
+			}
+			if( !found ) {
+				return null;
+			}
+			names.addFirst(name);
+			at = parent;
+		}
+		return (JdbcFileSource) createFileSource("/" + String.join("/", names));
+	}
+
+	private JdbcFileSource local(FileSource f) throws IOException {
+		if( f instanceof JdbcFileSource && ((JdbcFileSource) f).getFileSourceFactory() == this ) {
+			return (JdbcFileSource) f;
+		}
+		if( f instanceof JdbcFileSource && isSameFileSystem(((JdbcFileSource) f).getFileSourceFactory()) ) {
+			return (JdbcFileSource) f;
+		}
+		throw new IOException("A link has to be between files of one database: " + f);
+	}
+
+	/** A symbolic link is a row that holds the path it points to. The path doesn't have to exist. */
 	@Override
 	public FileSource createSymbolicLink(FileSource newFileLink, FileSource existingFile) throws IOException {
-		throw new UnsupportedOperationException();
+		JdbcFileSource link = local(newFileLink);
+		link.makeLink(local(existingFile), false);
+		return link;
 	}
 
-
+	/** A hard link is a row that shares the data of a file: the file is there until its last name is deleted. */
 	@Override
 	public FileSource createLink(FileSource newFileLink, FileSource existingFile) throws IOException {
-		throw new UnsupportedOperationException();
+		JdbcFileSource link = local(newFileLink);
+		link.makeLink(local(existingFile), true);
+		return link;
 	}
-
-
-
 
 }
