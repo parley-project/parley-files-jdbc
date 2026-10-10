@@ -128,7 +128,7 @@ Calf
 
 				int offset = (int)(pos-currentChunk.start);
 				if( offset < (maxWriteOffset+1)) {
-					ret = currentChunk.data[offset];
+					ret = currentChunk.data[offset] & 0xff;   // 0..255: a signed byte made 0xFF look like the end of the file
 					lastReadPosition = pos;
 				}				
 			} else {
@@ -136,7 +136,7 @@ Calf
 			}
 		} else if(currentChunk.contains(pos)) {
 			int offset = (int)(pos-currentChunk.start);
-			ret = currentChunk.data[offset];
+			ret = currentChunk.data[offset] & 0xff;   // 0..255: a signed byte made 0xFF look like the end of the file
 			lastReadPosition = pos;
 		} else {
 			throw new IOException("Logic error");
