@@ -90,6 +90,51 @@ public class JdbcFileInputStream extends InputStream {
 	}
 	
 	
+	/**
+	 * Copies what is left of the row in hand, loading the next row only when it is used up, so a
+	 * caller's buffer is filled a row at a time (not a byte at a time).
+	 */
+	@Override
+	public int read(byte[] b, int off, int len) throws IOException {
+		java.util.Objects.checkFromIndexSize(off, len, b.length);
+		if( len == 0 ) {
+			return 0;
+		}
+		int total = 0;
+		while( total < len && !eof ) {
+			if( data == null || pos < 0 || pos >= data.length ) {
+				loadNextChunk();
+				continue;
+			}
+			int n = Math.min(len - total, data.length - pos);
+			System.arraycopy(data, pos, b, off + total, n);
+			pos += n;
+			total += n;
+		}
+		return total == 0 ? -1 : total;
+	}
+
+	/** Moves over the rows without copying the bytes. */
+	@Override
+	public long skip(long n) throws IOException {
+		long skipped = 0;
+		while( skipped < n && !eof ) {
+			if( data == null || pos < 0 || pos >= data.length ) {
+				loadNextChunk();
+				continue;
+			}
+			int step = (int) Math.min(n - skipped, data.length - pos);
+			pos += step;
+			skipped += step;
+		}
+		return skipped;
+	}
+
+	@Override
+	public int available() {
+		return data == null || pos < 0 || eof ? 0 : Math.max(0, data.length - pos);
+	}
+
 	private void loadNextChunk() throws IOException {
 
 		data = file.getChunk(currentChunk++);
