@@ -51,8 +51,26 @@ public class JdbcRandomAccessIoController implements IRandomAccessIoController {
 
 
 	public JdbcRandomAccessIoController(JdbcFileSource file) throws IOException {
+		this(file, 0);
+	}
+
+	/**
+	 * @param chunkSize the size of the chunks (and so rows) this stream writes and the unit it
+	 * grows the file in. It is fixed for the life of the stream. 0 for the factory's chunk size
+	 * when this was opened. Chunks that are already stored are read as they were written.
+	 */
+	public JdbcRandomAccessIoController(JdbcFileSource file, int chunkSize) throws IOException {
 		this.file = file;
-		factory = (JdbcFileSourceFactory) file.getFileSourceFactory();		
+		factory = (JdbcFileSourceFactory) file.getFileSourceFactory();
+		this.chunkSize = chunkSize > 0 ? chunkSize : factory.getChunk_size();
+	}
+
+	/** Bytes in a chunk this stream creates; fixed when the stream was opened. */
+	private final int chunkSize;
+
+	/** @return the chunk size this stream writes in */
+	public int getChunkSize() {
+		return chunkSize;
 	}
 
 
@@ -253,7 +271,7 @@ Calf
 		}
 
 		// current chunk and pointer does not change
-		int size = factory.getChunk_size();
+		int size = chunkSize;
 		if( expand > size) {
 			byte [] tmp = new byte[size];
 			while( expand > size) {
@@ -328,7 +346,7 @@ Calf
 			Chunk c = new Chunk();
 			c.start = file.length();
 			c.chunk_number=-1;
-			c.size = factory.getChunk_size();
+			c.size = chunkSize;
 
 			c.data = new byte[c.size];			
 			c.isNew = true;

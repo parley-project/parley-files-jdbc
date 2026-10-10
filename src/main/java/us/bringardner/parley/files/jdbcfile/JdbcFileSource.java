@@ -34,6 +34,8 @@ import us.bringardner.parley.files.FileSourceProgress;
 import us.bringardner.parley.files.FileSourceRandomAccessStream;
 import us.bringardner.parley.files.IRandomAccessStream;
 import us.bringardner.parley.files.ISeekableInputStream;
+import us.bringardner.parley.files.StreamOption;
+import us.bringardner.parley.files.StreamOptions;
 import java.util.ArrayDeque;
 import java.util.Deque;
 
@@ -550,6 +552,53 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	@Override
 	public OutputStream getOutputStream(boolean append) throws IOException {
+		return openOutput(append, 0);
+	}
+
+	// ---- streams with their own sizes (see StreamOptions)
+
+	/**
+	 * CHUNK_SIZE: how a stream cuts what it writes into rows, which is also the unit random
+	 * access reads and writes and a seek past the end grows the file in. Data already stored is
+	 * read as it was written, whatever the size is now: each row keeps its own length.
+	 * <p>
+	 * BUFFER_SIZE isn't one: a stream's buffer is the row it is filling, so it is the chunk size.
+	 */
+	@Override
+	public java.util.Set<StreamOption<?>> supportedStreamOptions() {
+		return java.util.Collections.singleton(StreamOption.CHUNK_SIZE);
+	}
+
+	/** What a stream opened without options uses: the factory's chunk size, for both. */
+	@Override
+	public StreamOptions getStreamDefaults() {
+		int size = ((JdbcFileSourceFactory)getFileSourceFactory()).getChunk_size();
+		return StreamOptions.NONE.withBufferSize(size).withChunkSize(size);
+	}
+
+	/** The chunk size asked for in options, kept to the factory's limits; 0 if there isn't one. */
+	private static int chunkIn(StreamOptions options) {
+		Integer size = StreamOptions.orNone(options).get(StreamOption.CHUNK_SIZE);
+		return size == null || size <= 0 ? 0 : JdbcFileSourceFactory.clampBufferSize(size);
+	}
+
+	@Override
+	public OutputStream getOutputStream(boolean append, StreamOptions options) throws IOException {
+		return openOutput(append, chunkIn(options));
+	}
+
+	@Override
+	public ISeekableInputStream getSeekableInputStream(StreamOptions options) throws IOException {
+		return new JdbcFileSourceSeekableInputStream(this, chunkIn(options));
+	}
+
+	@Override
+	public IRandomAccessStream getRandomAccessStream(String mode, StreamOptions options) throws IOException {
+		return new FileSourceRandomAccessStream(new JdbcRandomAccessIoController(this, chunkIn(options)), mode);
+	}
+
+	/** @param chunkSize the rows this stream stores, or 0 for the factory's chunk size */
+	private OutputStream openOutput(boolean append, int chunkSize) throws IOException {
 		if(isDirectory()) {
 			throw new IOException("Cannot write to a directory");
 		}
@@ -572,7 +621,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		}
 
 
-		return new JdbcFileOutputStream(this, append);
+		return new JdbcFileOutputStream(this, append, chunkSize);
 
 	}
 
