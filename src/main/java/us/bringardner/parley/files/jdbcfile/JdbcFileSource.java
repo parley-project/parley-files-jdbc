@@ -834,10 +834,11 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 		String owner = factory.getUserId();
 
-		String sql = "insert into file_source.file (name,parentid,owner,file_type) values(?,?,?,?)";
+		// as a file made with the usual umask: only a directory starts executable
+		String sql = "insert into file_source.file (name,parentid,owner,file_type,"+OWNER_EXECUTABLE+") values(?,?,?,?,?)";
 
 		long pid = parent == null ? 0 : parent.fileid;
-		return executeUpdate(sql, name,pid,owner,file_type) == 1;
+		return executeUpdate(sql, name,pid,owner,file_type, DIRECTORY.equals(file_type)) == 1;
 	}
 
 
@@ -870,12 +871,19 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	public boolean renameTo(FileSource arg0) throws IOException {
 		boolean ret = false;
 
+		if( exists() && parent != null && equals(arg0) ) {
+			// as java.io.File: renaming a file to itself is a success that changes nothing
+			return true;
+		}
 		if(exists() && !arg0.exists()) {
 			if (arg0 instanceof JdbcFileSource) {
 				JdbcFileSource file = (JdbcFileSource) arg0;
 				//  Can't rename root or rename to root
 				if( parent != null && file.parent != null) {
-					if(file.parent.fileid != null || file.parent.ensureDirectory()) {
+					// as java.io.File: the directory it goes in has to be there. This made it, and
+					// then moved the file to the new directory's fileid before that had been
+					// looked up (null), which left the file without a parent: gone from every listing.
+					if(file.parent.isDirectory() && file.parent.fileid != null) {
 						String sql = "update file_source.file set parentid = ? , name = ? where fileid=?";
 						if((executeUpdate(sql, file.parent.fileid,file.name,fileid)==1)) {
 							fileid = null;
@@ -891,12 +899,14 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	@Override
 	public boolean setCreateTime(long arg0) throws IOException {
-		if( exists()) {
-			String sql = "update file_source.file set create_time=? where fileid=?";
-			if( executeUpdate(sql, new Timestamp(arg0),fileid) != 1) {
-				return false;
-			};
+		// as java.io.File: there is nothing to set at a path that doesn't exist
+		if( !exists() ) {
+			return false;
 		}
+		String sql = "update file_source.file set create_time=? where fileid=?";
+		if( executeUpdate(sql, new Timestamp(arg0),fileid) != 1) {
+			return false;
+		};
 		return true;
 	}
 
@@ -907,38 +917,40 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	@Override
 	public boolean setExecutable(boolean arg0, boolean ownerOnly) throws IOException {
-		boolean ret = false;
-		if( !ownerOnly) {
-			ret = setExecutable(arg0);
-		} else {
-			if( exists()) {
-				String sql = "update file_source.file set owner_executable = ? group_executable = ? other_executable = ? where fileid = ?";
-				if( executeUpdate(sql, arg0,arg0,arg0,fileid) == 1) {
-					ret = true;
-				}
-			}
+		// as java.io.File: the owner's bit, and the group's and other's too unless ownerOnly
+		// (the test was the wrong way round, and the SQL had no commas)
+		if( !exists() ) {
+			return false;
 		}
-		return ret;
+		if( ownerOnly ) {
+			return setOwnerExecutable(arg0);
+		}
+		String sql = "update file_source.file set owner_executable = ?, group_executable = ?, other_executable = ? where fileid = ?";
+		return executeUpdate(sql, arg0, arg0, arg0, fileid) == 1;
 	}
 
 	@Override
 	public boolean setGroup(GroupPrincipal arg0) throws IOException {
-		if(exists() ) {
-			String sql = "update file_source.file set group_name = ? where fileid = ?";
-			if(executeUpdate(sql,arg0,fileid) != 1) {
-				return false;
-			}
+		// as java.io.File: there is nothing to set at a path that doesn't exist
+		if( !exists() ) {
+			return false;
+		}
+		String sql = "update file_source.file set group_name = ? where fileid = ?";
+		if(executeUpdate(sql,arg0,fileid) != 1) {
+			return false;
 		}
 		return true;
 	}
 
 	@Override
 	public boolean setGroupExecutable(boolean arg0) throws IOException {
-		if(exists() ) {
-			String sql = "update file_source.file set group_executable = ? where fileid = ?";
-			if(executeUpdate(sql,arg0,fileid) != 1) {
-				return false;
-			}
+		// as java.io.File: there is nothing to set at a path that doesn't exist
+		if( !exists() ) {
+			return false;
+		}
+		String sql = "update file_source.file set group_executable = ? where fileid = ?";
+		if(executeUpdate(sql,arg0,fileid) != 1) {
+			return false;
 		}
 		return true;
 	}
@@ -962,23 +974,26 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	@Override
 	public boolean setGroupReadable(boolean arg0) throws IOException {
-		if(exists() ) {
-			String sql = "update file_source.file set group_readable = ? where fileid = ?";
-			if(executeUpdate(sql,arg0,fileid) != 1) {
-				return false;
-			}
+		// as java.io.File: there is nothing to set at a path that doesn't exist
+		if( !exists() ) {
+			return false;
+		}
+		String sql = "update file_source.file set group_readable = ? where fileid = ?";
+		if(executeUpdate(sql,arg0,fileid) != 1) {
+			return false;
 		}
 		return true;
 	}
 
 	@Override
 	public boolean setGroupWritable(boolean arg0) throws IOException {
-
-		if(exists() ) {
-			String sql = "update file_source.file set group_writeable = ? where fileid = ?";
-			if(executeUpdate(sql,arg0,fileid) != 1) {
-				return  false;
-			}
+		// as java.io.File: there is nothing to set at a path that doesn't exist
+		if( !exists() ) {
+			return false;
+		}
+		String sql = "update file_source.file set group_writeable = ? where fileid = ?";
+		if(executeUpdate(sql,arg0,fileid) != 1) {
+			return  false;
 		}
 		return true;
 	}
@@ -997,116 +1012,134 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	@Override
 	public boolean setLastAccessTime(long arg0) throws IOException {
-		if(exists() ) {
-			String sql = "update file_source.file set last_access_date = ? where fileid = ?";
-			if(executeUpdate(sql,new Timestamp(arg0),fileid) !=1) {
-				return false;
-			}
+		// as java.io.File: there is nothing to set at a path that doesn't exist
+		if( !exists() ) {
+			return false;
+		}
+		String sql = "update file_source.file set last_access_date = ? where fileid = ?";
+		if(executeUpdate(sql,new Timestamp(arg0),fileid) !=1) {
+			return false;
 		}
 		return true;
 	}
 
 	@Override
 	public boolean setLastModifiedTime(long arg0) throws IOException {
-
-		if(exists() ) {
-			String sql = "update file_source.file set last_modified = ? where fileid = ?";
-			if( executeUpdate(sql,new Timestamp(arg0),fileid) !=1) {
-				return false;
-			}
+		// as java.io.File.setLastModified: false for a path that doesn't exist. (This updated a column
+		// called last_modified, which isn't there, so it threw for every file that did exist.)
+		if( !exists() ) {
+			return false;
 		}
+		Timestamp time = new Timestamp(arg0);
+		String sql = "update file_source.file set "+LAST_MODIFIED_DATE+" = ? where fileid = ?";
+		if( executeUpdate(sql,time,fileid) !=1) {
+			return false;
+		}
+		setFieldCache(LAST_MODIFIED_DATE, time);
 		return true;
 	}
 
 	@Override
 	public boolean setOtherExecutable(boolean arg0) throws IOException {
-		if(exists() ) {
-			String sql = "update file_source.file set other_executable = ? where fileid = ?";
-			if( executeUpdate(sql,arg0,fileid) !=1) {
-				return false;
-			}
+		// as java.io.File: there is nothing to set at a path that doesn't exist
+		if( !exists() ) {
+			return false;
+		}
+		String sql = "update file_source.file set other_executable = ? where fileid = ?";
+		if( executeUpdate(sql,arg0,fileid) !=1) {
+			return false;
 		}
 		return true;
 	}
 
 	@Override
 	public boolean setOtherReadable(boolean arg0) throws IOException {
-
-		if(exists() ) {
-			String sql = "update file_source.file set other_readable = ? where fileid = ?";
-			if(executeUpdate(sql,arg0,fileid)!=1) {
-				return false;
-			}
+		// as java.io.File: there is nothing to set at a path that doesn't exist
+		if( !exists() ) {
+			return false;
+		}
+		String sql = "update file_source.file set other_readable = ? where fileid = ?";
+		if(executeUpdate(sql,arg0,fileid)!=1) {
+			return false;
 		}
 		return true;
 	}
 
 	@Override
 	public boolean setOtherWritable(boolean arg0) throws IOException {
-		if(exists() ) {
-			String sql = "update file_source.file set other_writeable = ? where fileid = ?";
-			if(executeUpdate(sql,arg0,fileid)!=1) {
-				return false;
-			}
+		// as java.io.File: there is nothing to set at a path that doesn't exist
+		if( !exists() ) {
+			return false;
+		}
+		String sql = "update file_source.file set other_writeable = ? where fileid = ?";
+		if(executeUpdate(sql,arg0,fileid)!=1) {
+			return false;
 		}
 		return true;
 	}
 
 	@Override
 	public boolean setOwner(UserPrincipal arg0) throws IOException {
-		if(exists() ) {
-			String sql = "update file_source.file set owner = ? where fileid = ?";
-			if(executeUpdate(sql,arg0.getName(),fileid)!=1) {
-				return false;
-			}
+		// as java.io.File: there is nothing to set at a path that doesn't exist
+		if( !exists() ) {
+			return false;
+		}
+		String sql = "update file_source.file set owner = ? where fileid = ?";
+		if(executeUpdate(sql,arg0.getName(),fileid)!=1) {
+			return false;
 		}
 		return true;
 	}
 
 	@Override
 	public boolean setOwnerExecutable(boolean arg0) throws IOException {
-		if(exists() ) {
-			String sql = "update file_source.file set owner_executable = ? where fileid = ?";
-			if(executeUpdate(sql,arg0,fileid)!=1) {
-				return false;
-			}
+		// as java.io.File: there is nothing to set at a path that doesn't exist
+		if( !exists() ) {
+			return false;
+		}
+		String sql = "update file_source.file set owner_executable = ? where fileid = ?";
+		if(executeUpdate(sql,arg0,fileid)!=1) {
+			return false;
 		}
 		return true;
 	}
 
 	@Override
 	public boolean setOwnerReadable(boolean arg0) throws IOException {
-		if(exists() ) {
-			String sql = "update file_source.file set owner_readable = ? where fileid = ?";
-			if(executeUpdate(sql,arg0,fileid)!=1) {
-				return false;
-			}
+		// as java.io.File: there is nothing to set at a path that doesn't exist
+		if( !exists() ) {
+			return false;
+		}
+		String sql = "update file_source.file set owner_readable = ? where fileid = ?";
+		if(executeUpdate(sql,arg0,fileid)!=1) {
+			return false;
 		}
 		return true;
 	}
 
 	@Override
 	public boolean setOwnerWritable(boolean arg0) throws IOException {
-		if(exists() ) {
-			String sql = "update file_source.file set owner_writeable = ? where fileid = ?";
-			if(executeUpdate(sql,arg0,fileid)!=1) {
-				return false;
-			}
+		// as java.io.File: there is nothing to set at a path that doesn't exist
+		if( !exists() ) {
+			return false;
+		}
+		String sql = "update file_source.file set owner_writeable = ? where fileid = ?";
+		if(executeUpdate(sql,arg0,fileid)!=1) {
+			return false;
 		}
 		return true;
 	}
 
 	@Override
 	public boolean setReadOnly() throws IOException {
-		if( exists()) {
-			String sql = "update file_source.file set "+
-					"owner_executable =? , owner_writeable=? , group_executable=? , group_writeable =?, other_executable =?, other_writeable=?"
-					+"where fileid = ?";
-			if(executeUpdate(sql, false, false ,false , false , false , false,fileid)!=1) {
-				return false;
-			}
+		// as java.io.File.setReadOnly: nobody can write it, and nothing else changes (this also took
+		// away every execute bit, and had no space before "where"); false for a path that isn't there
+		if( !exists() ) {
+			return false;
 		}
-		return true;
+		String sql = "update file_source.file set "+OWNER_WRITEABLE+" = ?, "+GROUP_WRITEABLE+" = ?, "
+				+OTHER_WRITEABLE+" = ? where fileid = ?";
+		return executeUpdate(sql, false, false, false, fileid) == 1;
 	}
 
 	@Override
@@ -1116,18 +1149,16 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	@Override
 	public boolean setReadable(boolean arg0, boolean ownerOnly) throws IOException {
-		boolean ret = false;
-		if( !ownerOnly) {
-			ret = setReadable(arg0);
-		} else {
-			if( exists()) {
-				String sql = "update file_source.file set owner_readable = ? group_readable = ? other_readable = ? where fileid = ?";
-				if( executeUpdate(sql, arg0,arg0,arg0,fileid) == 1) {
-					ret = true;
-				}
-			}
+		// as java.io.File: the owner's bit, and the group's and other's too unless ownerOnly
+		// (the test was the wrong way round, and the SQL had no commas)
+		if( !exists() ) {
+			return false;
 		}
-		return ret;
+		if( ownerOnly ) {
+			return setOwnerReadable(arg0);
+		}
+		String sql = "update file_source.file set owner_readable = ?, group_readable = ?, other_readable = ? where fileid = ?";
+		return executeUpdate(sql, arg0, arg0, arg0, fileid) == 1;
 	}
 
 	@Override
@@ -1147,18 +1178,16 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	@Override
 	public boolean setWritable(boolean arg0, boolean ownerOnly) throws IOException {
-		boolean ret = false;
-		if( !ownerOnly) {
-			ret = setWritable(arg0);
-		} else {
-			if( exists()) {
-				String sql = "update file_source.file set owner_writeable = ? group_writeable = ? other_writeable = ? where fileid = ?";
-				if( executeUpdate(sql, arg0,arg0,arg0,fileid) == 1) {
-					ret = true;
-				}
-			}
+		// as java.io.File: the owner's bit, and the group's and other's too unless ownerOnly
+		// (the test was the wrong way round, and the SQL had no commas)
+		if( !exists() ) {
+			return false;
 		}
-		return ret;
+		if( ownerOnly ) {
+			return setOwnerWritable(arg0);
+		}
+		String sql = "update file_source.file set owner_writeable = ?, group_writeable = ?, other_writeable = ? where fileid = ?";
+		return executeUpdate(sql, arg0, arg0, arg0, fileid) == 1;
 	}
 
 	@Override
