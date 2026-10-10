@@ -82,9 +82,10 @@ abstract public class ObjectPool implements Runnable {
 	private boolean debug = isDefDebug();
 
 	private ArrayList<IManagedObject> pool= new ArrayList<IManagedObject>(getDefaultMax());
-	private boolean running = false;
-	private boolean started = false;
-	private Thread thread;
+	//  Read by the threads that wait for the pool, written by its own thread
+	private volatile boolean running = false;
+	private volatile boolean started = false;
+	private volatile Thread thread;
 
 
 
@@ -209,6 +210,18 @@ abstract public class ObjectPool implements Runnable {
 		return min;
 	}
 	abstract public String getName();
+
+	/**
+	 * An object was released or destroyed: let a thread waiting in {@link #getObject()} look again.
+	 * Waiters wait on the list of objects, so that is what has to be notified (this used to
+	 * notify the pool itself, which nobody waits on, and a waiter always slept its whole
+	 * {@link #getTimeToSleep()}).
+	 */
+	void objectChanged() {
+		synchronized (pool) {
+			pool.notify();
+		}
+	}
 	/**
 	 *  GEt an object from the pool.  If no object is available then
 	 * 	create one unless we've reached max in size.
@@ -226,9 +239,17 @@ abstract public class ObjectPool implements Runnable {
 			long maxTime = System.currentTimeMillis()+timeToWait;
 
 			while( ret == null && System.currentTimeMillis()< maxTime ) {
-				for(int i=0, sz=pool.size(); i< sz; i++ ) {
+				for(int i=0; i< pool.size(); i++ ) {
 					mo = (IManagedObject)pool.get(i);
-					if(!mo.isDestroyed() && mo.getStatus() == IManagedObject.FREE ) {
+					if( mo.isDestroyed() ) {
+						//  It still holds a slot until the maintenance thread (every
+						//  getInterval() ms) gets to it; a full pool of dead objects
+						//  would refuse new ones until then.
+						pool.remove(i--);
+						try {
+							destroyObject(mo.getObject());
+						} catch(Exception ex) {}
+					} else if( mo.getStatus() == IManagedObject.FREE ) {
 						ret = mo;
 						break;
 					}
@@ -253,10 +274,12 @@ abstract public class ObjectPool implements Runnable {
 				if( ret != null ) {
 					ret.setInUse();
 				} else {
-					//  Could wait the full timeToWait.  But under some conditions
-					//  and object may be availible without notifying the pool.
-					//  So, we'll wake up every so often and check it.
-					pool.wait(timeToSleep);
+					//  A release wakes us at once (see ManagedObjectImp.setStatus); this
+					//  is only a safety net, so don't let it run past the deadline.
+					long left = maxTime-System.currentTimeMillis();
+					if( left > 0 ) {
+						pool.wait(Math.max(1, Math.min(timeToSleep, left)));
+					}
 				}
 			}
 		}
@@ -308,7 +331,11 @@ abstract public class ObjectPool implements Runnable {
 	public void run()
 	{
 
-		started = running = true;
+		synchronized (this) {
+			started = running = true;
+			//  wake awaitStart()
+			notifyAll();
+		}
 		
 		while( running ) {
 
@@ -356,7 +383,9 @@ abstract public class ObjectPool implements Runnable {
 			if( running ) {
 				try {
 					Thread.sleep(interval);
-				} catch(Exception ex) {}
+				} catch(InterruptedException ex) {
+					//  stop() interrupts the sleep; running is checked above
+				}
 			}
 
 
@@ -519,9 +548,11 @@ abstract public class ObjectPool implements Runnable {
 	{
 		return pool.size();
 	}
-	public void start()
+	public synchronized void start()
 	{
 		if( !running ) {
+			//  Set here too, so a second start() before the thread runs does nothing
+			running = true;
 			thread = new Thread(this);
 			thread.setName(getName());
 			thread.setDaemon(runAsDeamon);
@@ -532,8 +563,33 @@ abstract public class ObjectPool implements Runnable {
 	public void stop()
 	{
 		running = false;
-		thread.interrupt();
+		Thread t = thread;
+		if( t != null ) {
+			t.interrupt();
+		}
+		//  nobody is waiting for a pool that was stopped before it started
+		synchronized (this) {
+			notifyAll();
+		}
+	}
 
+	/**
+	 * Wait until the pool's thread is running (or the pool was stopped).
+	 * @param timeoutMillis the longest to wait
+	 * @return true if it started, false if the time ran out or the pool was stopped first
+	 */
+	public boolean awaitStart(long timeoutMillis) throws InterruptedException {
+		long end = System.currentTimeMillis()+timeoutMillis;
+		synchronized (this) {
+			while( !started ) {
+				long left = end-System.currentTimeMillis();
+				if( left <= 0 || (thread != null && !running) ) {
+					return false;
+				}
+				wait(left);
+			}
+		}
+		return true;
 	}
 	public static int getDefaultAutoDebug() {
 		return defaultAutoDebug;

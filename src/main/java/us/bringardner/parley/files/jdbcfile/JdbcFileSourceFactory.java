@@ -414,6 +414,9 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 		return "ALTER TABLE file_source.file ALTER COLUMN "+column+" SET DATA TYPE "+type;
 	}
 
+	/** The pool's thread starts at once; this only keeps a failure from waiting forever. */
+	private static final long POOL_START_WAIT_MS = 30_000;
+
 	@Override
 	protected synchronized boolean connectImpl() {
 		boolean ret = false;
@@ -435,11 +438,13 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 				throw new RuntimeException("Can't get a connection pool");
 			}
 			
-			while(!tmp.hasStarted()) {
-				try {
-					Thread.sleep(1);
-				} catch (InterruptedException e) {
+			try {
+				if( !tmp.awaitStart(POOL_START_WAIT_MS) ) {
+					throw new SQLException("The connection pool did not start in "+POOL_START_WAIT_MS+" ms");
 				}
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				throw new SQLException("Interrupted while the connection pool was starting", e);
 			}
 			
 			if(tmp !=null && tmp.isRunning() ) {
