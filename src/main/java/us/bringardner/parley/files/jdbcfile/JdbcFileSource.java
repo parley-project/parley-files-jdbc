@@ -307,12 +307,18 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	}
 
 	@Override
+	/**
+	 * Orders by path, then by kind, like the other FileSources. It used to compare the other
+	 * way round, so files sorted in descending order, and it returned 0 (equal) for anything
+	 * that wasn't a JdbcFileSource.
+	 */
 	public int compareTo(Object arg0) {
-		if (arg0 instanceof JdbcFileSource) {
-			JdbcFileSource file = (JdbcFileSource) arg0;
-			return file.getAbsolutePath().compareTo(getAbsolutePath());
+		String mine = getAbsolutePath();
+		if (arg0 instanceof FileSource) {
+			int ret = mine.compareTo(((FileSource) arg0).getAbsolutePath());
+			return ret != 0 ? ret : getClass().getName().compareTo(arg0.getClass().getName());
 		}
-		return 0;
+		return mine.compareTo(String.valueOf(arg0));
 	}
 
 	@Override
@@ -1143,6 +1149,28 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	public String toString() {
 		return getAbsolutePath();
+	}
+
+	/**
+	 * Equal when it is the same path in the same database, as with the other FileSources:
+	 * like java.io.File, two handles for one file are equal.
+	 */
+	@Override
+	public boolean equals(Object obj) {
+		if( this == obj ) {
+			return true;
+		}
+		if( !(obj instanceof JdbcFileSource) ) {
+			return false;
+		}
+		JdbcFileSource f = (JdbcFileSource) obj;
+		return getAbsolutePath().equals(f.getAbsolutePath()) && factory.isSameFileSystem(f.factory);
+	}
+
+	/** Hashes the path, which equals() compares. */
+	@Override
+	public int hashCode() {
+		return getAbsolutePath().hashCode();
 	}
 
 
