@@ -45,14 +45,28 @@ public class JdbcFileOutputStream extends OutputStream {
 	 * 
 	 * Most of the chunk sizes will be determines by the sender through the write functions 
 	 */
+	/**
+	 * @deprecated no effect: a stream's buffer is the factory's
+	 * {@link JdbcFileSourceFactory#getBufferSize()}. (It used to allocate a buffer of this size
+	 * that the constructor then replaced.)
+	 */
+	@Deprecated
 	public static int chunkSize = (1024*100);
 	private JdbcFileSource file;
-	private byte [] data = new byte[chunkSize];
+	private byte [] data;
 	private int pointer = 0;	
 	private boolean isClosed=false;
 
 	
 	public JdbcFileOutputStream(JdbcFileSource file, boolean append) throws IOException{
+		this(file, append, 0);
+	}
+
+	/**
+	 * @param chunkSize the size of the rows this stream stores: its buffer is filled, then
+	 * stored as one row. 0 for the factory's chunk size.
+	 */
+	public JdbcFileOutputStream(JdbcFileSource file, boolean append, int chunkSize) throws IOException{
 		super();
 
 		this.file = file;
@@ -63,7 +77,7 @@ public class JdbcFileOutputStream extends OutputStream {
 		} else if( ! append ){
 			file.truncate();			
 		}
-		int size = ((JdbcFileSourceFactory)file.getFileSourceFactory()).getChunk_size();
+		int size = chunkSize > 0 ? chunkSize : ((JdbcFileSourceFactory)file.getFileSourceFactory()).getChunk_size();
 		data = new byte[size];
 	}
 

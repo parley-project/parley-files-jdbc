@@ -72,6 +72,21 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	public static final String DEFAULT_GROUP = "staff";
 	/** "false" leaves an older schema alone; otherwise narrow owner/group columns are widened on connect. */
 	public static final String JDBC_UPGRADE_SCHEMA = "jdbcUpgradeSchema";
+	/**
+	 * Bytes in one chunk: what a write buffers before it is stored as one row of
+	 * file_data, and what random access reads and writes at a time. See
+	 * {@link #setBufferSize(int)}.
+	 * <p>
+	 * This is for programmers: it isn't in {@link #getConnectionSettings()}, so no dialog
+	 * shows it, and {@link #getConnectProperties()} only has it when it was set, so saved
+	 * connections keep following the default. The JVM-wide default is the system property
+	 * {@value #SYSTEM_PROPERTY_BUFFER_SIZE}.
+	 */
+	public static final String PROP_BUFFER_SIZE = "bufferSize";
+	public static final String SYSTEM_PROPERTY_BUFFER_SIZE = "parley.jdbc.bufferSize";
+	public static final int DEFAULT_BUFFER_SIZE = 1024*100;
+	public static final int MIN_BUFFER_SIZE = 1024;
+	public static final int MAX_BUFFER_SIZE = 16*1024*1024;
 	/** Width of the owner and group_name columns (the SQL standard identifier length). */
 	public static final int NAME_COLUMN_SIZE = 128;
 	public static final String TYPE_DIR = "dir";
@@ -132,7 +147,9 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	private Properties instanceProperies = new Properties();
 	private int fieldTimeToLive = 500;
 	private Map<String,Integer> timeToLiveMap = new HashMap<>();
-	private int chunk_size = 1024*100;
+	private int chunk_size = defaultBufferSize();
+	/** True once the size was set (setChunk_size, setBufferSize or PROP_BUFFER_SIZE), not just defaulted. */
+	private volatile boolean chunkSizeExplicit;
 
 	
 	/**
@@ -153,6 +170,61 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 
 	public void setChunk_size(int chunk_size) {
 		this.chunk_size = chunk_size;
+		this.chunkSizeExplicit = true;
+	}
+
+	/**
+	 * The default for new factories: the system property {@value #SYSTEM_PROPERTY_BUFFER_SIZE}
+	 * if it is a number (kept within MIN_BUFFER_SIZE and MAX_BUFFER_SIZE), otherwise
+	 * DEFAULT_BUFFER_SIZE.
+	 */
+	public static int defaultBufferSize() {
+		String v = System.getProperty(SYSTEM_PROPERTY_BUFFER_SIZE);
+		if( v != null && !v.trim().isEmpty()) {
+			try {
+				return clampBufferSize(Long.parseLong(v.trim()));
+			} catch (NumberFormatException e) {
+				// a bad value uses the default
+			}
+		}
+		return DEFAULT_BUFFER_SIZE;
+	}
+
+	/** @return size kept within {@link #MIN_BUFFER_SIZE} and {@link #MAX_BUFFER_SIZE} */
+	static int clampBufferSize(long size) {
+		return (int) Math.max(MIN_BUFFER_SIZE, Math.min(MAX_BUFFER_SIZE, size));
+	}
+
+	/**
+	 * The chunk size, which is also the size of the buffer a write fills before storing a
+	 * row, so a copy loop should read and write about this much at a time. Data already
+	 * stored keeps the chunks it was written in (each row records its length). It is the
+	 * same value as {@link #getChunk_size()}.
+	 */
+	public int getBufferSize() {
+		return chunk_size;
+	}
+
+	/**
+	 * @param size bytes, kept within {@link #MIN_BUFFER_SIZE} and {@link #MAX_BUFFER_SIZE}
+	 * (setChunk_size doesn't limit it); streams read it when they are opened
+	 */
+	public void setBufferSize(int size) {
+		setChunk_size(clampBufferSize(size));
+	}
+
+	/** Takes PROP_BUFFER_SIZE out of values; sets the size from it unless it is empty or not a number. */
+	private void applyBufferSize(Properties values) {
+		String v = (String) values.remove(PROP_BUFFER_SIZE);
+		if( v != null && !v.trim().isEmpty()) {
+			// No dialog shows this, so a bad value can't be fixed there and must not stop
+			// the connection: say so and keep the size as it is.
+			try {
+				setBufferSize(clampBufferSize(Long.parseLong(v.trim())));
+			} catch (NumberFormatException e) {
+				logError("Ignoring "+PROP_BUFFER_SIZE+" '"+v+"': not a number");
+			}
+		}
 	}
 
 
@@ -489,6 +561,9 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	public Properties getConnectProperties() {
 		Properties ret = new Properties();
 		ret.putAll(instanceProperies);
+		if( chunkSizeExplicit ) {
+			ret.setProperty(PROP_BUFFER_SIZE, ""+chunk_size);
+		}
 		return ret;
 	}
 
@@ -546,6 +621,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 			}			
 		}
 
+		applyBufferSize(p);
 		instanceProperies = p;
 	}
 
@@ -560,7 +636,14 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 				value = JDBC_GROUP.equals(key) || JDBC_UPGRADE_SCHEMA.equals(key) ? _connectProperties.getProperty(key) : "";
 			}
 			instanceProperies.setProperty(key, value);
-		}		
+		}
+		// not one of the settings above, so it has to be read here or it would be dropped
+		Properties given = new Properties();
+		String size = prop.getProperty(PROP_BUFFER_SIZE);
+		if( size != null ) {
+			given.setProperty(PROP_BUFFER_SIZE, size);
+			applyBufferSize(given);
+		}
 	}
 
 	@Override

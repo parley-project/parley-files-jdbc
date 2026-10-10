@@ -12,12 +12,20 @@ public class JdbcFileSourceSeekableInputStream extends InputStream implements IS
 
 	private JdbcFileSource file;
 	private long pointer = 0;
-	private int bufferSize = 1024*5;
 	private boolean closed = false;
 
 	JdbcFileSourceSeekableInputStream(JdbcFileSource file) {
-		this.file = file;	
+		this(file, 0);
 	}
+
+	/** @param chunkSize the size of the rows a seek past the end grows the file with, or 0 for the factory's */
+	JdbcFileSourceSeekableInputStream(JdbcFileSource file, int chunkSize) {
+		this.file = file;
+		this.growBy = chunkSize > 0 ? chunkSize : ((JdbcFileSourceFactory)file.getFileSourceFactory()).getChunk_size();
+	}
+
+	/** how much one append grows the file by when a seek goes past the end */
+	private final int growBy;
 
 	@Override
 	public long length() throws IOException {		
@@ -27,6 +35,8 @@ public class JdbcFileSourceSeekableInputStream extends InputStream implements IS
 	@Override
 	public void seek(long whereTo) throws IOException {
 		long size = length();
+		// grow in chunks, as writes are stored (this was a fixed 5 KB)
+		int bufferSize = growBy;
 		while( whereTo > size) {
 			//  make it grow
 
