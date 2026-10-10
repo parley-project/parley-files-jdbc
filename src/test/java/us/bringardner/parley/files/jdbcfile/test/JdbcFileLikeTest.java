@@ -42,16 +42,4 @@ public class JdbcFileLikeTest extends FileLikeBehaviorTests {
 	protected FileSource sourceFor(String relative) throws Exception {
 		return factory().createFileSource(tree + "/" + relative);
 	}
-
-	/** JdbcFileSourceFactory does not create links yet (UnsupportedOperationException). */
-	@Override
-	protected boolean supportsSymbolicLinks() {
-		return false;
-	}
-
-	/** JdbcFileSourceFactory does not create links yet (UnsupportedOperationException). */
-	@Override
-	protected boolean supportsHardLinks() {
-		return false;
-	}
 }
