@@ -149,7 +149,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 						try (ResultSet rs = pstmt.executeQuery()) {
 							if( rs.next()) {
 								ret = rs.getObject(1);
-								fieldCache.put(name, new FieldValue(ret));	
+								fieldCache.put(name, new NamedField(name, ret));
 							}
 						}
 					}
@@ -419,9 +419,15 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	private boolean rowExists() throws IOException {
 		forgetIfChanged();
 
-		// already been queried
+		// already been queried: the id is trusted for the field time to live, like the attributes.
+		// (It used to be kept for good, so a file deleted or renamed through another connection
+		// still existed for a handle that had found it.)
 		if(fileid != null) {
-			return true;
+			if( System.currentTimeMillis() - fileidAt <= factory.getFieldTimeToLive() ) {
+				return true;
+			}
+			fileid = null;
+			fieldCache.clear();
 		}
 
 		boolean ret = false;		
@@ -474,6 +480,9 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			}
 
 			Object val = rs.getObject(idx);
+			if( "fileid".equals(f) ) {
+				fileidAt = System.currentTimeMillis();
+			}
 			try {
 				Field field = getClass().getDeclaredField(f);
 				field.setAccessible(true);
@@ -533,6 +542,9 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	 */
 	@NotAField()
 	private transient long seenChange = -1;
+	/** When fileid was found; it is trusted for the factory's field time to live. */
+	@NotAField()
+	private transient long fileidAt;
 
 	private void forgetIfChanged() {
 		long now = factory.getChangeCount();

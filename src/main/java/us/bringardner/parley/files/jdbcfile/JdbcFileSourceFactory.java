@@ -159,8 +159,11 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	public JdbcFileSourceFactory() {
 		super();
 		setConnectionProperties(_connectProperties);	
+		// What a handle remembers (its row id, attributes, listing) is kept for fieldTimeToLive, 500 ms
+		// unless set. A change made through this factory is seen at once; one made by another
+		// connection is seen after that time. (A longer time for FILE_TYPE used to be set here; it
+		// never took effect, and it would have kept a deleted file's type for 100 seconds.)
 		setFieldTimeToLive(KIDS, 1000);
-		setFieldTimeToLive(FILE_TYPE, 100000);		
 	}
 
 	
