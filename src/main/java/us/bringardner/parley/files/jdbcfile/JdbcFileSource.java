@@ -524,7 +524,8 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		if( depth > 40 ) {
 			throw new IOException("Too many levels of symbolic links: " + getAbsolutePath());
 		}
-		if( factory.linksPossible() && rowExists() && LINK.equals(ownType()) ) {
+		// (a link that leads nowhere is not resolved and keeps its own name, as java.io.File's does)
+		if( factory.linksPossible() && rowExists() && LINK.equals(ownType()) && exists() ) {
 			return linkTarget().canonicalPath(depth+1);
 		}
 		if( parent == null ) {
