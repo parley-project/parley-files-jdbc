@@ -233,7 +233,8 @@ Calf
 						pstmt.setLong(4, file.getFileId());
 						if( pstmt.executeUpdate() != 1) {
 							throw new IOException("Can't update chunk="+currentChunk);
-						}						
+						}
+						file.changed();						
 					} catch (SQLException e) {
 						throw new IOException(e);
 					}
@@ -309,6 +310,7 @@ Calf
 			pstmt.setLong(1, chunkNumber);
 			pstmt.setLong(2, file.getFileId());
 			pstmt.executeUpdate();
+			file.changed();
 		} catch (SQLException e) {
 			throw new IOException(e);
 		}

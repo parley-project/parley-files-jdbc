@@ -378,6 +378,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 				}
 				fileid = null;
 				forgetResolution();
+				changed();
 				if( parent != null) {
 					parent.dereferenceChilderen();
 				}
@@ -416,6 +417,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	/** This path has a row of its own: a file, a directory, or a link (also one that points at nothing). */
 	private boolean rowExists() throws IOException {
+		forgetIfChanged();
 
 		// already been queried
 		if(fileid != null) {
@@ -520,6 +522,39 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		}
 		String p = parent.canonicalPath(depth+1);
 		return p.equals("/") ? "/" + name : p + "/" + name;
+	}
+
+	/**
+	 * The factory's change count when this handle last looked at the database; -1 before it did.
+	 * A change made through any FileSource of the factory since then drops what this handle
+	 * remembers (its row id, attributes, listing), so a handle that was kept sees it, as a
+	 * java.io.File does. A change made by another connection is seen when the cached values
+	 * expire (see the factory's field time to live).
+	 */
+	@NotAField()
+	private transient long seenChange = -1;
+
+	private void forgetIfChanged() {
+		long now = factory.getChangeCount();
+		long seen = seenChange;
+		if( seen != now ) {
+			seenChange = now;
+			if( seen != -1 ) {
+				fileid = null;
+				fieldCache.clear();
+				kids = null;
+				resolvedHandle = null;
+			}
+		}
+	}
+
+	/**
+	 * Called after this handle changed the database. Others forget what they knew; this one
+	 * keeps its own cache, which the change code has already brought up to date.
+	 */
+	void changed() {
+		factory.noteChange();
+		seenChange = factory.getChangeCount();
 	}
 
 	@NotAField()
@@ -675,6 +710,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			throw new IOException(e);
 		}
 		fieldCache.clear();
+		changed();
 		parent.dereferenceChilderen();
 	}
 
@@ -763,6 +799,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		} catch (SQLException e) {
 			throw new IOException(e);
 		}
+		changed();
 		return true;
 	}
 
@@ -1282,6 +1319,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 				ret = pstmt.executeUpdate();
 			}
 			fieldCache.clear();
+			changed();
 		} catch (SQLException e) {
 			throw new IOException(e);
 		}
@@ -1576,6 +1614,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 				setFieldCache(CHUNK_COUNT,0);
 				setFieldCache(LAST_ACCESS_DATE, time);
 				setFieldCache(LAST_MODIFIED_DATE, time);
+				changed();
 			} catch (SQLException e) {
 				throw new IOException(e);
 			}
@@ -1641,6 +1680,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			removeCache(LENGTH,CHUNK_COUNT);
 			setFieldCache(LAST_ACCESS_DATE, time);
 			setFieldCache(LAST_MODIFIED_DATE, time);
+			changed();
 		} catch (SQLException e) {
 			throw new IOException(e);
 		}
