@@ -27,6 +27,26 @@ creates is owned by that user, so the owner permissions apply to it. Its group i
 files); set it empty for no group. Other database users get the group or other
 permissions stored with each file.
 
+## Links
+
+Symbolic links and hard links work, and **the schema is unchanged**; two more values are used in
+`file_source.file.file_type` (the others are `file` and `dir`):
+
+| `file_type` | What the row is |
+|---|---|
+| `link` | A symbolic link. Its content (chunk 1 in `file_data`) is the path it points to, as on POSIX. The target needn't exist. |
+| `hard` | One more name for a file. Its content (chunk 1) is the `fileid` of the row that holds the data, so it follows a rename. When that row is deleted, the first hard link takes the data and attributes over. |
+
+A path answers for what it leads to: type, length, content, listing, permissions and streams, also below a
+linked directory. A write through a link changes the file it leads to (the link stays a link).
+`getLinkedTo()` and `getCanonicalPath()` follow a symbolic link; `delete()` and `renameTo()` act on the
+link. A link made by another client is seen within a couple of seconds, and a
+database that has no links pays nothing extra. See
+[Links](https://github.com/tony-bringardner/parley-files#links) in parley-files.
+
+Code or tools that read the tables directly should know that a `link` or `hard` row is not a file with its
+own data.
+
 ## Upgrading an existing database
 
 The `owner` and `group_name` columns were `VARCHAR(10)`, too short for many user ids.
