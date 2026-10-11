@@ -846,9 +846,14 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		throw new IOException("Children are not allowed ");
 	}
 
+	/**
+	 * The MIME type for the name's extension, from the table every FileSource shares, or null when
+	 * it isn't in it or there is no extension. (It was "" for every file, where the other file
+	 * systems answer null for a type they don't know.)
+	 */
 	@Override
 	public String getContentType() {
-		return "";
+		return us.bringardner.parley.files.fileproxy.FileProxy.getContentType(getName());
 	}
 
 	@Override
