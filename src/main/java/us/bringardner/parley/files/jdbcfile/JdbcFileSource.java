@@ -379,6 +379,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 				fileid = null;
 				forgetResolution();
 				changed();
+				touchParent();
 				if( parent != null) {
 					parent.dereferenceChilderen();
 				}
@@ -1117,14 +1118,17 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	@Override
 	public String[] list(FileSourceFilter filter) throws IOException {
+		// as java.io.File.list(filter): null when this isn't a directory, and no filter lists everything
+		FileSource[] files = listFiles();
+		if( files == null ) {
+			return null;
+		}
 		List<String> ret = new ArrayList<>();
-		for(FileSource file:listFiles()) {
-			if(filter.accept(file)) {
+		for(FileSource file : files) {
+			if( filter == null || filter.accept(file) ) {
 				ret.add(file.getName());
 			}
 		}
-
-
 		return ret.toArray(new String[ret.size()]);
 	}
 
@@ -1168,9 +1172,13 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	@Override
 	public FileSource[] listFiles(FileSourceFilter filter) throws IOException {
+		FileSource[] files = listFiles();
+		if( files == null ) {
+			return null;   // not a directory, as java.io.File.listFiles(filter)
+		}
 		List<FileSource> list = new ArrayList<>();
-		for(FileSource file : listFiles()) {
-			if(filter.accept(file)) {
+		for(FileSource file : files) {
+			if( filter == null || filter.accept(file) ) {
 				list.add(file);
 			}
 		}
@@ -1200,6 +1208,14 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		return ret;
 	}
 
+	/** As a file system does: a directory's modified time is when something was last added to it or taken out. */
+	private void touchParent() throws IOException {
+		if( parent != null && parent.rowExists() ) {
+			parent.executeUpdate("update file_source.file set "+LAST_MODIFIED_DATE+" = ? where fileid = ?",
+					new Timestamp(System.currentTimeMillis()), parent.fileid);
+		}
+	}
+
 	private boolean executeInsert(String file_type) throws IOException {
 
 		String owner = factory.getUserId();
@@ -1209,7 +1225,11 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 		long pid = parent == null ? 0 : parent.rowId();
 		forgetResolution();
-		return executeUpdate(sql, name,pid,owner,file_type, DIRECTORY.equals(file_type)) == 1;
+		boolean made = executeUpdate(sql, name,pid,owner,file_type, DIRECTORY.equals(file_type)) == 1;
+		if( made ) {
+			touchParent();
+		}
+		return made;
 	}
 
 
@@ -1252,6 +1272,8 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 					String sql = "update file_source.file set parentid = ? , name = ? where fileid=?";
 					long destParent = file.parent.rowId();
 					if((executeUpdate(sql, destParent,file.name,fileid)==1)) {
+						touchParent();
+						file.touchParent();
 						fileid = null;
 						forgetResolution();
 						file.forgetResolution();
