@@ -265,8 +265,13 @@ public class JdbcBufferSizeTest {
 		file.delete();
 	}
 
+	/**
+	 * A seekable input stream is read-only, as a RandomAccessFile opened with "r": a seek past the
+	 * end only moves the pointer. (It used to grow the file in chunks of the stream's chunk size,
+	 * so looking at a file could change it.)
+	 */
 	@Test
-	void growingByASeekUsesTheStreamsChunk() throws Exception {
+	void seekingPastTheEndNeverChangesTheFile() throws Exception {
 		JdbcFileSource file = (JdbcFileSource) dir().getChild("grow.bin");
 		try (OutputStream out = file.getOutputStream()) {
 			out.write(random(10, 6));
@@ -274,11 +279,13 @@ public class JdbcBufferSizeTest {
 		ISeekableInputStream in = file.getSeekableInputStream(StreamOptions.chunk(2 * 1024));
 		try {
 			in.seek(10 + 5 * 2 * 1024);
+			assertEquals(10 + 5 * 2 * 1024, in.getFilePointer());
+			assertEquals(-1, in.read());
 		} finally {
 			in.close();
 		}
-		assertEquals(10 + 5 * 2 * 1024, file.length());
-		assertEquals(1 + 5, file.getChunkCount(), "the first row and five 2 KB ones");
+		assertEquals(10, file.length());
+		assertEquals(1, file.getChunkCount());
 		file.delete();
 	}
 
