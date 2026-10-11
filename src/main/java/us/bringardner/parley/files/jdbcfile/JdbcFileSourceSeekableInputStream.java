@@ -2,93 +2,101 @@ package us.bringardner.parley.files.jdbcfile;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
+import java.util.Objects;
 
 import us.bringardner.parley.files.FileSource;
 import us.bringardner.parley.files.ISeekableInputStream;
 
+/**
+ * A read-only view of a JDBC file that can be moved around, as a RandomAccessFile opened with
+ * mode "r": seeking never changes the file (a seek past the end leaves the pointer there and
+ * the next read returns -1), and bytes are 0..255.
+ * <p>
+ * It keeps one input stream, positioned at the pointer, so reading on from where the last read
+ * ended doesn't start again from the beginning of the file; a seek drops it and the next read
+ * opens another at the new place.
+ */
 public class JdbcFileSourceSeekableInputStream extends InputStream implements ISeekableInputStream {
 
-
-	private JdbcFileSource file;
+	private final JdbcFileSource file;
 	private long pointer = 0;
 	private boolean closed = false;
+	/** the stream the last read used, and where it is now; null if there isn't one at the pointer */
+	private InputStream current;
+	private long currentAt = -1;
 
 	JdbcFileSourceSeekableInputStream(JdbcFileSource file) {
-		this(file, 0);
-	}
-
-	/** @param chunkSize the size of the rows a seek past the end grows the file with, or 0 for the factory's */
-	JdbcFileSourceSeekableInputStream(JdbcFileSource file, int chunkSize) {
 		this.file = file;
-		this.growBy = chunkSize > 0 ? chunkSize : ((JdbcFileSourceFactory)file.getFileSourceFactory()).getChunk_size();
 	}
 
-	/** how much one append grows the file by when a seek goes past the end */
-	private final int growBy;
+	/**
+	 * @param chunkSize not used: this stream doesn't write (a seek past the end used to grow the
+	 * file in chunks of this size). Kept so the options of getSeekableInputStream still fit.
+	 */
+	JdbcFileSourceSeekableInputStream(JdbcFileSource file, int chunkSize) {
+		this(file);
+	}
 
 	@Override
-	public long length() throws IOException {		
+	public long length() throws IOException {
 		return file.length(true);
 	}
 
 	@Override
 	public void seek(long whereTo) throws IOException {
-		long size = length();
-		// grow in chunks, as writes are stored (this was a fixed 5 KB)
-		int bufferSize = growBy;
-		while( whereTo > size) {
-			//  make it grow
-
-			int expand = (int) (whereTo - size);
-			if( expand >= bufferSize) {
-				expand = bufferSize;
-			}
-
-			try(OutputStream out = file.getOutputStream(true)) {
-				out.write(new byte[expand]);
-			}
-
-			size += expand;
+		if( whereTo < 0 ) {
+			throw new IOException("Negative seek offset");
 		}
-
-		pointer = whereTo;		
-
+		pointer = whereTo;
 	}
 
-	private byte [] dubmBuffer = new byte[1];
+	private final byte[] one = new byte[1];
 
-	/**
-	 * Warning... this will be very slow.
-	 * But, I don't think it will be used much and I'm too lazy to manage a runtime buffer :-(
-	 */
 	@Override
 	public int read() throws IOException {
-		if( !closed ) {
-			if( read(dubmBuffer) == dubmBuffer.length) {
-				return dubmBuffer[0];
-			}
-		}
-		return -1;
+		return read(one, 0, 1) == 1 ? one[0] & 0xff : -1;
 	}
 
 	@Override
-	public int read(byte[] data, int start, int end) throws IOException {
-		int ret = -1;
-		if( !closed) {
-			long skip = pointer+start;
-			try(InputStream in = file.getInputStream(skip)) {
-				if( (ret=in.read(data, start, end))>=0) {
-					pointer+=ret;
-				}
-			}
+	public int read(byte[] data, int off, int len) throws IOException {
+		Objects.checkFromIndexSize(off, len, data.length);
+		if( closed ) {
+			return -1;
 		}
-		return ret;
+		if( len == 0 ) {
+			return 0;
+		}
+		if( current == null || currentAt != pointer ) {
+			dropCurrent();
+			current = file.getInputStream(pointer);
+			currentAt = pointer;
+		}
+		int n = current.read(data, off, len);
+		if( n > 0 ) {
+			pointer += n;
+			currentAt += n;
+		}
+		return n;
+	}
+
+	@Override
+	public int read(byte[] data) throws IOException {
+		return read(data, 0, data.length);
+	}
+
+	private void dropCurrent() throws IOException {
+		InputStream c = current;
+		current = null;
+		currentAt = -1;
+		if( c != null ) {
+			c.close();
+		}
 	}
 
 	@Override
 	public void close() throws IOException {
-		closed = true;		
+		closed = true;
+		dropCurrent();
 	}
 
 	@Override
@@ -105,10 +113,4 @@ public class JdbcFileSourceSeekableInputStream extends InputStream implements IS
 	public InputStream getInputStream() throws IOException {
 		return this;
 	}
-
-	@Override
-	public int read(byte[] data) throws IOException {
-		return read(data,0,data.length);
-	}
-
 }
