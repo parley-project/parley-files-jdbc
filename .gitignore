@@ -1,3 +1,7 @@
 target/
 .DS_*
 /BjlFileSystemJdbc/
+# Eclipse
+.classpath
+.project
+.settings/
