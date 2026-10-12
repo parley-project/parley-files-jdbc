@@ -31,6 +31,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintWriter;
+import java.net.ServerSocket;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.Statement;
@@ -72,9 +73,12 @@ final class JdbcTestServer implements TestServerController {
 		return "jdbc:hsqldb:hsql://localhost:"+port+"/mainDb"+port;
 	}
 
-	/** Starts the server on port, connects a factory to it and creates the tables. */
+	/**
+	 * Starts the server on port (or a free port if something else holds it), connects a
+	 * factory to it and creates the tables.
+	 */
 	static JdbcFileSourceFactory setUp(int port) throws Exception {
-		running = new JdbcTestServer(port);
+		running = new JdbcTestServer(availablePort(port));
 		FileSourceTestSupport.startServer(running, TIMEOUT);
 		Class.forName(DRIVER);
 		DriverManager.getConnection(running.url(), USER, PASSWORD).close();
@@ -96,6 +100,17 @@ final class JdbcTestServer implements TestServerController {
 		FileSourceTestSupport.factory = factory;
 		FileSourceTestSupport.server = running;
 		return factory;
+	}
+
+	/** @return port if it is free, else one the system picks (another service may hold port) */
+	private static int availablePort(int port) throws IOException {
+		try (ServerSocket s = new ServerSocket(port)) {
+			return port;
+		} catch (IOException e) {
+			try (ServerSocket s = new ServerSocket(0)) {
+				return s.getLocalPort();
+			}
+		}
 	}
 
 	/** The factory setUp connected. */
