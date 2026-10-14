@@ -34,6 +34,7 @@ import java.io.IOException;
 import java.net.URL;
 import java.sql.Connection;
 import java.sql.SQLException;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
@@ -494,7 +495,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	private static final long POOL_START_WAIT_MS = 30_000;
 
 	@Override
-	protected synchronized boolean connectImpl() {
+	protected synchronized boolean connectImpl() throws IOException {
 		boolean ret = false;
 		if( isConnected() ) {
 			return true;
@@ -502,11 +503,20 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 
 		Properties prop = getConnectProperties();
 		JdbcConnectionPool tmp;
+		// the setting may be a reference (@keychain:...): resolved only to log in. The pool
+		// keeps the password to open further connections, as a JDBC driver needs.
+		String setting = prop.getProperty(JDBC_PASSWORD);
+		String password = null;
+		if( setting != null ) {
+			char[] pw = secret(JDBC_PASSWORD, setting);
+			password = new String(pw);
+			Arrays.fill(pw, '\0');
+		}
 		try {
 			tmp = JdbcConnectionPool.getConnectionPool(
 					prop.getProperty(JDBC_URL),
 					prop.getProperty(JDBC_USERID),
-					prop.getProperty(JDBC_PASSWORD)
+					password
 					);
 			
 			if( tmp == null ) {
@@ -536,7 +546,10 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 			logError("Can't open pool", e);
 		}
 
-		
+		if( !ret ) {
+			// a pool that couldn't log in is useless: drop it rather than keep a dead thread
+			JdbcConnectionPool.removeConnectionPool(prop.getProperty(JDBC_URL), prop.getProperty(JDBC_USERID), password);
+		}
 		return ret;
 	}
 
