@@ -148,9 +148,13 @@ public static synchronized  JdbcConnectionPool getConnectionPool(String url, Str
 
 	
 }
+/**
+ * The pool's name, which its thread also takes, so it shows in thread dumps and debuggers:
+ * the URL and user only, never the password.
+ */
 public String getName()
 {
-	return url+":"+userid+":"+passwd;
+	return "jdbc pool "+url+" "+userid;
 }
 /**
  * 
@@ -165,6 +169,40 @@ public java.lang.String getPasswd() {
  * Creation date: (7/4/2002 2:58:57 PM)
  * @return java.util.Hashtable
  */
+/**
+ * Pools are shared by URL, user and password, so a different password never reuses another
+ * login. The password is kept in the key only as a SHA-256 digest.
+ */
+private static String key(String url, String userid, String passwd) {
+	String digest = "";
+	if( passwd != null ) {
+		try {
+			byte[] d = java.security.MessageDigest.getInstance("SHA-256")
+					.digest(passwd.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+			digest = java.util.Base64.getEncoder().encodeToString(d);
+		} catch (java.security.NoSuchAlgorithmException e) {
+			// every Java platform has SHA-256
+			throw new IllegalStateException(e);
+		}
+	}
+	return url+":"+userid+":"+digest;
+}
+
+/**
+ * Stops and forgets the pool for url, userid and passwd, so the next getConnectionPool makes
+ * a new one. A pool whose login failed must not be reused.
+ */
+public static synchronized void removeConnectionPool(String url, String userid, String passwd) {
+	JdbcConnectionPool p = pools.remove(key(url, userid, passwd));
+	if( p != null ) {
+		try {
+			p.destroyAll();
+		} catch (RuntimeException e) {
+			// it's being thrown away anyway
+		}
+	}
+}
+
 public static Map<String, JdbcConnectionPool> getPools() {
 	return pools;
 }
@@ -218,7 +256,7 @@ public static synchronized  JdbcConnectionPool getConnectionPool(String url, Str
 	throws SQLException
 {
 	
-	String key = url+":"+userid+":"+url;
+	String key = key(url, userid, passwd);
 
 	JdbcConnectionPool p = null;
 
