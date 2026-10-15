@@ -1,6 +1,6 @@
 # parley-files-jdbc
 
-A [parley-files](https://github.com/tony-bringardner/parley-files) `FileSource` implementation that
+A [parley-files](https://github.com/parley-project/parley-files) `FileSource` implementation that
 keeps a file system in a database, via JDBC. Part of **Parley**, a family of Java libraries for
 implementing internet protocols. Put it on the class path and `FileSourceFactory` finds it through
 `ServiceLoader` (`JdbcFileSourceFactory`, type id `Jdbc`).
@@ -42,7 +42,7 @@ linked directory. A write through a link changes the file it leads to (the link 
 `getLinkedTo()` and `getCanonicalPath()` follow a symbolic link; `delete()` and `renameTo()` act on the
 link. A link made by another client is seen within a couple of seconds, and a
 database that has no links pays nothing extra. See
-[Links](https://github.com/tony-bringardner/parley-files#links) in parley-files.
+[Links](https://github.com/parley-project/parley-files#links) in parley-files.
 
 Code or tools that read the tables directly should know that a `link` or `hard` row is not a file with its
 own data.
