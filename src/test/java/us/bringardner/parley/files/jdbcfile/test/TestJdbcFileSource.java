@@ -34,9 +34,9 @@ public class TestJdbcFileSource extends AbstractTestClass {
 
 	@BeforeAll
 	public static void setUp() throws Exception {
-		localTestFileDirPath = "TestFiles";
-		localCacheDirPath = "target/TestFiles";
-		remoteTestFileDirPath = "TestFiles";
+		localTestFileDirPath = testFilesDir(TestJdbcFileSource.class);
+		localCacheDirPath = scratchDir("TestFiles");
+		remoteTestFileDirPath = "/TestFiles";
 		JdbcTestServer.setUp(9001);
 	}
 }

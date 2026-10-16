@@ -34,8 +34,8 @@ public class JdbcNioProviderTests extends AbstractNioProviderTests {
 
 	@BeforeAll
 	public static void setUp() throws Exception {
-		localTestFileDirPath = "TestFiles";
-		localCacheDirPath = "target/NioTestFiles";
+		localTestFileDirPath = testFilesDir(JdbcNioProviderTests.class);
+		localCacheDirPath = scratchDir("NioTestFiles");
 		remoteTestFileDirPath = "/NioProviderTests";
 		JdbcTestServer.setUp(9007);
 	}
