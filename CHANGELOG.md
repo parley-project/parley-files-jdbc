@@ -1,6 +1,6 @@
 # Changelog
 
-## parley-files-jdbc 1.0.0 (unreleased)
+## parley-files-jdbc 1.0.0 (2026-10-16)
 
 BjlFileSystemJdbc (`us.bringardner:bjl_file_system_jdbc` 1.0.0-SNAPSHOT) is now **parley-files-jdbc**,
 part of the Parley library family. The code is the same; only names changed.
