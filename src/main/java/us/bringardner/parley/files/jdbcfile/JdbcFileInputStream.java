@@ -32,8 +32,6 @@ package us.bringardner.parley.files.jdbcfile;
 import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.io.InputStream;
-import java.sql.ResultSet;
-import java.sql.SQLException;
 
 /**
  * @author Tony Bringardner
@@ -45,7 +43,6 @@ public class JdbcFileInputStream extends InputStream {
 	private JdbcFileSource file;
 	private byte [] data ;
 	private int pos=-1;
-	private ResultSet rs;
 	private int currentChunk;
 	private boolean eof = false;
 
@@ -144,16 +141,9 @@ public class JdbcFileInputStream extends InputStream {
 		}
 	}
 
+	/** Nothing to release: each chunk is read with its own statement. */
+	@Override
 	public void close() throws IOException {
-		if( rs != null ){
-			try {
-				rs.close();
-				file.setLastAccessTime(System.currentTimeMillis());
-			} catch (SQLException e) {
-				e.printStackTrace();
-				throw new IOException("Error closing result set. e="+e);
-			}
-		}
 	}
 
 }

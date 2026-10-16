@@ -315,7 +315,7 @@ Calf
 			throw new IOException(e);
 		}
 
-		len = file.length(true);
+		file.length(true); // the rows changed: drop the cached length
 		int delta = (int)(newLength- currentChunk.start);
 
 		if( delta > 0 ) {
@@ -418,8 +418,8 @@ where start_pos <= 100
 				if( data1 == null ) {
 					data1 = file.getChunk(--chunk_number);
 					if(data1 == null ) {
-						System.out.println("Can't do it");
-						}
+						throw new IOException("No data chunk at or before "+(chunk_number+1)+" for position "+pos+" in "+file.getCanonicalPath());
+					}
 				}
 
 				Chunk c = new Chunk(start_pos, chunk_number, data1);

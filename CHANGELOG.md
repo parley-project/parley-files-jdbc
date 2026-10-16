@@ -25,6 +25,7 @@ part of the Parley library family. The code is the same; only names changed.
   `getSeparatorChar()` and `getPathSeparatorChar()`.
 - `JdbcFileOutputStream.chunkSize`, a static field with no effect, is removed: a stream's buffer is the
   factory's `getBufferSize()`, and its row size the factory's chunk size or the stream's `StreamOption.CHUNK_SIZE`.
+- `pool.TestPool`, an interactive program for trying the connection pool by hand, is no longer in the library.
 
 ### Unchanged
 
