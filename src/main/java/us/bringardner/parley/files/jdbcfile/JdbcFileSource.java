@@ -1,6 +1,6 @@
 package us.bringardner.parley.files.jdbcfile;
 
-import static us.bringardner.parley.files.jdbcfile.JdbcFileSourceFactory.seperatorChar;
+import static us.bringardner.parley.files.jdbcfile.JdbcFileSourceFactory.separatorChar;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -240,7 +240,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			// i am root
 			name = "";
 		} else {
-			int idx = path.lastIndexOf(seperatorChar);
+			int idx = path.lastIndexOf(separatorChar);
 			if( idx < 0 ) {
 				// I don't thin this can happen
 				name = path;

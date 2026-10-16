@@ -19,6 +19,12 @@ part of the Parley library family. The code is the same; only names changed.
 - The module no longer uses Swing. `gui.DriverBrowserDialog`, an empty dialog that nothing used,
   is removed.
 - `listFiles(ProgressMonitor)` is now `listFiles(FileSourceProgress)`.
+- `JdbcFileSourceFactory`'s path constants are spelled correctly: `separatorChar`, `separator`,
+  `dosSeparatorChar`, `pathSeparator` and `pathSeparatorChar` (were `seperatorChar`, `seperator`,
+  `dosSeperatorChar`, `pathSeperator` and `pathSSeperatorChar`), and the factory implements parley-files'
+  `getSeparatorChar()` and `getPathSeparatorChar()`.
+- `JdbcFileOutputStream.chunkSize`, a static field with no effect, is removed: a stream's buffer is the
+  factory's `getBufferSize()`, and its row size the factory's chunk size or the stream's `StreamOption.CHUNK_SIZE`.
 
 ### Unchanged
 

@@ -45,13 +45,6 @@ public class JdbcFileOutputStream extends OutputStream {
 	 * 
 	 * Most of the chunk sizes will be determines by the sender through the write functions 
 	 */
-	/**
-	 * @deprecated no effect: a stream's buffer is the factory's
-	 * {@link JdbcFileSourceFactory#getBufferSize()}. (It used to allocate a buffer of this size
-	 * that the constructor then replaced.)
-	 */
-	@Deprecated
-	public static int chunkSize = (1024*100);
 	private JdbcFileSource file;
 	private byte [] data;
 	private int pointer = 0;	

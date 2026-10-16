@@ -100,12 +100,12 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	public static final String DOT = ".";
 	public static final String DOT_DOT = "..";
 	//  These are lower case to mimic the File object
-	public static final char seperatorChar = '/';
-	public static final String seperator = "/";
-	public static final char dosSeperatorChar = '\\';
+	public static final char separatorChar = '/';
+	public static final String separator = "/";
+	public static final char dosSeparatorChar = '\\';
 
-	public static final String pathSeperator = ":";
-	public static final char pathSSeperatorChar = ':';
+	public static final String pathSeparator = ":";
+	public static final char pathSeparatorChar = ':';
 
 
 	public static final String STATUS_NEW = "New";
