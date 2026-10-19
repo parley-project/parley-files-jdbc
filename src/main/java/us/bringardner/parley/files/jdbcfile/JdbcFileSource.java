@@ -1810,6 +1810,18 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	}
 
 	/**
+	 * A database: locks as {@link #getLockScope()} says; createNewFile and mkdir atomic (the unique
+	 * key on parent and name decides); each write committed, so sync is durable; one database, so
+	 * operations are applied in one order. Replace isn't atomic yet (delete, then rename).
+	 * @since 1.1.0
+	 */
+	@Override
+	public us.bringardner.parley.files.FileSourceCapabilities getCapabilities() {
+		return us.bringardner.parley.files.FileSourceCapabilities.defaults(getLockScope()).withDurableSync(true)
+				.withOrderedOperations(true);
+	}
+
+	/**
 	 * A lock on a region of the file (a link's target, for a link), kept by the database where it can
 	 * (see {@link #getLockScope()}): a row for the region in {@code file_source.file_lock_range}, kept
 	 * row-locked on a connection of its own until the lock is released (see {@code JdbcLocks}). The
