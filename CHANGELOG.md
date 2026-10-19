@@ -1,5 +1,19 @@
 # Changelog
 
+## parley-files-jdbc 1.1.0 (unreleased)
+
+Needs parley-files 1.1.0.
+
+### Added
+
+- File locks (`lock()`, `tryLock()`, see parley-files). On PostgreSQL 10+, MySQL 8+ and MariaDB 10.3+
+  the database keeps them (`getLockScope()` is `CLUSTER`): a row lock on the file's row in the new
+  `file_source.file_lock` table, held on a connection of its own until the lock is released. The holder
+  works on the file as usual, the lock stays with the file through a rename, and a dead holder's locks
+  are freed by the database. Other databases (HSQLDB) lock within this JVM (`PROCESS`).
+- The `file_source.file_lock` table, in every `.ddl` file and created on connect when missing (unless
+  `jdbcUpgradeSchema` is `false`). Rows of deleted files are removed on connect.
+
 ## parley-files-jdbc 1.0.0 (2026-10-16)
 
 BjlFileSystemJdbc (`us.bringardner:bjl_file_system_jdbc` 1.0.0-SNAPSHOT) is now **parley-files-jdbc**,

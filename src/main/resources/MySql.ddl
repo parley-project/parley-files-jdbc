@@ -39,4 +39,10 @@ CREATE TABLE file_source.file_data (
 	primary key (chunk_number,fileid)
 	)
 	;
-	
+
+-- File locks (FileSource.lock): one row per locked file, row-locked by the holder.
+-- Used by PostgreSQL, MySQL 8 and MariaDB 10.3+, and created on connect if missing.
+CREATE TABLE file_source.file_lock (
+	FILEID BIGINT NOT NULL PRIMARY KEY
+	)
+	;

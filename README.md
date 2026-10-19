@@ -47,7 +47,40 @@ database that has no links pays nothing extra. See
 Code or tools that read the tables directly should know that a `link` or `hard` row is not a file with its
 own data.
 
+## Locking
+
+Files can be locked as parley-files describes (`lock()`, `tryLock()`, shaped like NIO's `FileChannel.lock()`).
+Where the database can, it keeps the locks, so they reach every process on every machine that uses it
+(`getLockScope()` is `CLUSTER`):
+
+| Database | Locks |
+|---|---|
+| PostgreSQL 10+ | in the database (`CLUSTER`) |
+| MySQL 8+ | in the database (`CLUSTER`) |
+| MariaDB 10.3+ | in the database (`CLUSTER`) |
+| HSQLDB, others | this JVM only (`PROCESS`): they can't refuse a row lock without waiting |
+
+Each locked file has a row in `file_source.file_lock`, keyed by its `fileid`. A lock is a row lock on that row
+(`SELECT ... FOR UPDATE NOWAIT`, or `FOR SHARE NOWAIT` for a shared lock) in a transaction held open, on a
+connection of its own, until the lock is released. Nothing else uses that table, so the holder reads, writes and
+renames the file as usual while it holds the lock; the file's own rows are never locked. The lock is on the file,
+not its name, so it stays with the file through a rename. If the holder dies, its connection drops and the
+database frees the lock.
+
+Each lock holds one database connection, opened for it (not taken from the pool, which closes connections that
+are idle for long). A database that closes idle connections (MySQL's `wait_timeout`, 8 hours by default) frees a
+lock held longer than that. Rows of deleted files are removed when a factory connects, except rows still locked.
+
 ## Upgrading an existing database
+
+The lock table is new in 1.1.0. It is created when the factory connects, unless `jdbcUpgradeSchema` is `false`;
+to create it yourself (the `.ddl` files have it too):
+
+```sql
+CREATE TABLE file_source.file_lock (FILEID BIGINT NOT NULL PRIMARY KEY);
+```
+
+Without it, locks reach only this JVM (a warning is logged).
 
 The `owner` and `group_name` columns were `VARCHAR(10)`, too short for many user ids.
 New schemas (the `.ddl` files in `src/main/resources/`) use `VARCHAR(128)`. An existing schema is

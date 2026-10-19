@@ -72,7 +72,10 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	public static final String JDBC_GROUP = "jdbcGroup";
 	/** The schema's default GROUP_NAME for new files. */
 	public static final String DEFAULT_GROUP = "staff";
-	/** "false" leaves an older schema alone; otherwise narrow owner/group columns are widened on connect. */
+	/**
+	 * "false" leaves an older schema alone; otherwise, on connect, narrow owner/group columns are
+	 * widened and the lock table (file_source.file_lock) is created where locks are kept in the database.
+	 */
 	public static final String JDBC_UPGRADE_SCHEMA = "jdbcUpgradeSchema";
 	/**
 	 * Bytes in one chunk: what a write buffers before it is stored as one row of
@@ -144,6 +147,8 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	public boolean versionSupported = false;
 
 	private JdbcConnectionPool pool;
+	/** How this database keeps file locks; null if it can't (the locks then reach only this JVM). */
+	private volatile JdbcLocks.Dialect lockDialect;
 	private JdbcFileSource curentDir;
 	private JdbcFileSource [] roots;	
 	private Properties instanceProperies = new Properties();
@@ -537,9 +542,11 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 				try(Connection con = tmp.getConnection()) {
 					pool = tmp;
 					ret = true;
-					if( !"false".equalsIgnoreCase(prop.getProperty(JDBC_UPGRADE_SCHEMA, "true").trim())) {
+					boolean upgrade = !"false".equalsIgnoreCase(prop.getProperty(JDBC_UPGRADE_SCHEMA, "true").trim());
+					if( upgrade ) {
 						widenNameColumns(con);
 					}
+					lockDialect = setUpLocks(con, upgrade);
 				}
 			}
 		} catch (SQLException e) {
@@ -554,8 +561,64 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	}
 
 
+	/**
+	 * Find whether this database can keep file locks, and make its lock table if it is missing (and
+	 * upgrading is allowed). Never fails the connection: without the table, locks reach only this JVM.
+	 * @return the dialect, or null
+	 */
+	private JdbcLocks.Dialect setUpLocks(Connection con, boolean upgrade) {
+		JdbcLocks.Dialect dialect;
+		try {
+			dialect = JdbcLocks.detect(con.getMetaData());
+		} catch (SQLException | RuntimeException e) {
+			logWarn("Can't tell whether the database can keep file locks; they reach only this JVM: "+e);
+			return null;
+		}
+		if( dialect == null ) {
+			return null;
+		}
+		try {
+			if( upgrade ) {
+				JdbcLocks.createTable(con);
+			}
+			try(Statement st = con.createStatement(); ResultSet rs = st.executeQuery("SELECT fileid FROM "+JdbcLocks.TABLE+" WHERE 1 = 0")) {
+				// the table is there
+			}
+		} catch (SQLException | RuntimeException e) {
+			logWarn("No lock table ("+JdbcLocks.TABLE+", see README); file locks reach only this JVM: "+e);
+			return null;
+		}
+		try {
+			int n = JdbcLocks.removeRowsOfDeletedFiles(con, dialect);
+			if( n > 0 ) {
+				logInfo("Removed "+n+" lock rows of deleted files");
+			}
+		} catch (SQLException | RuntimeException e) {
+			logWarn("Can't tidy "+JdbcLocks.TABLE+" (harmless): "+e);
+		}
+		return dialect;
+	}
+
+	/** @return how this database keeps file locks, or null if they reach only this JVM */
+	JdbcLocks.Dialect lockDialect() {
+		return isConnected() ? lockDialect : null;
+	}
+
+	/**
+	 * A connection of its own for one lock, not from the pool: the pool closes connections that are
+	 * idle for long, and a lock's connection is idle for as long as the lock is held.
+	 */
+	Connection openLockConnection() throws SQLException {
+		JdbcConnectionPool p = pool;
+		if( p == null ) {
+			throw new SQLException("Not connected");
+		}
+		return java.sql.DriverManager.getConnection(p.getUrl(), p.getUserid(), p.getPasswd());
+	}
+
 	@Override
 	protected void disConnectImpl() {
+		lockDialect = null;
 		if( pool != null ) {
 			try {
 				pool.destroyAll();
