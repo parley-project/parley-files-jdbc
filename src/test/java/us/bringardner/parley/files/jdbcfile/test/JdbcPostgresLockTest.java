@@ -3,6 +3,7 @@ package us.bringardner.parley.files.jdbcfile.test;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -208,6 +209,34 @@ public class JdbcPostgresLockTest extends AbstractLockTests {
 	private static int orphanRows(String table) throws SQLException {
 		return count("SELECT count(*) FROM " + table + " l WHERE NOT EXISTS "
 				+ "(SELECT 1 FROM file_source.file f WHERE f.fileid = l.fileid)");
+	}
+
+	/** tryLock never waits on the file's mutex: a mutex that stays taken means busy. */
+	@Test
+	public void tryLockDoesNotWaitForAStuckLocker() throws Exception {
+		FileSource f = file("stuck");
+		f.tryLock().release(); // makes the file's mutex row
+		long fileid;
+		try (Connection con = DriverManager.getConnection(url); Statement st = con.createStatement();
+				ResultSet rs = st.executeQuery("SELECT fileid FROM file_source.file WHERE name = 'stuck'")) {
+			assertTrue(rs.next());
+			fileid = rs.getLong(1);
+		}
+		// another locker, stalled in the middle of taking a lock: it holds the mutex
+		try (Connection stuck = DriverManager.getConnection(url)) {
+			stuck.setAutoCommit(false);
+			try (Statement st = stuck.createStatement()) {
+				st.executeQuery("SELECT fileid FROM file_source.file_lock WHERE fileid = " + fileid + " FOR UPDATE").close();
+			}
+			long start = System.nanoTime();
+			assertNull(f.tryLock(), "busy while the mutex is taken");
+			long ms = (System.nanoTime() - start) / 1_000_000;
+			assertTrue(ms < 5000, "came back in " + ms + " ms, not waiting for the stuck locker");
+			stuck.rollback();
+		}
+		FileSourceLock l = f.tryLock();
+		assertNotNull(l, "free once the stuck locker lets go");
+		l.release();
 	}
 
 	/** A holder that dies leaves its row behind; the next locker finds it stale and takes the region. */

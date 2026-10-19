@@ -75,7 +75,9 @@ A lock covers a region of a file (the whole file unless a region is asked for). 
 `file_source.file_lock_range` (the file's `fileid`, the region, shared or not), and the holder keeps that row
 locked (`SELECT ... FOR UPDATE`) in a transaction open, on a connection of its own, until the lock is released:
 the row says what is held, its row lock says the holder is alive. A lock is taken under a short mutex, a row lock
-on the file's row in `file_source.file_lock`: the locker checks the regions that overlap its own, removes stale
+on the file's row in `file_source.file_lock`, taken without waiting (`NOWAIT`, retried for up to 200 ms, set with
+the system property `parley.files.jdbc.lockMutexWait`; a mutex that stays taken means busy, since `tryLock` must not
+wait): the locker checks the regions that overlap its own, removes stale
 ones (rows nobody keeps locked: their holder died), and either finds a live one it can't share and gives up, or
 adds its row, locks it, and lets the mutex go. Nothing else uses these tables, so the holder reads, writes and
 renames the file as usual while it holds the lock; the file's own rows are never locked. The lock is on the file,

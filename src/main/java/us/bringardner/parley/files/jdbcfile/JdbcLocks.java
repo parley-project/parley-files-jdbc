@@ -31,7 +31,9 @@ import us.bringardner.parley.files.lock.LockBackend;
  * stale claim that the next locker removes.
  * <p>
  * Taking a lock is done under a short mutex, a row lock on the file's row in
- * {@code file_source.file_lock}: the locker looks at every region that overlaps the one it wants,
+ * {@code file_source.file_lock}, taken without waiting ({@code NOWAIT}, tried again for up to
+ * {@code parley.files.jdbc.lockMutexWait} ms, 200 by default; a mutex that stays taken means busy,
+ * since a tryLock must not wait): the locker looks at every region that overlaps the one it wants,
  * removes the stale ones (it can row-lock them, so their holder is gone), and either finds one held
  * by a live holder that conflicts (both exclusive, or one of them) and gives up, or inserts its row,
  * locks it on its own connection, and only then lets the mutex go. Nothing else ever writes to these
@@ -54,6 +56,13 @@ final class JdbcLocks {
 	static final String RANGES = "file_source.file_lock_range";
 
 	private static final SecureRandom IDS = new SecureRandom();
+
+	/**
+	 * How long a tryLock tries for a file's mutex before it calls the file busy (system property
+	 * {@code parley.files.jdbc.lockMutexWait}, ms). Lockers hold it only while they look and claim.
+	 */
+	static final long MUTEX_WAIT_NANOS = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
+			Long.getLong("parley.files.jdbc.lockMutexWait", 200));
 
 	/** The SQL each database needs. */
 	enum Dialect {
@@ -216,13 +225,9 @@ final class JdbcLocks {
 			try {
 				mutex = factory.getConnection();
 				mutex.setAutoCommit(false);
-				try (PreparedStatement ps = mutex.prepareStatement("SELECT fileid FROM " + TABLE + " WHERE fileid = ? FOR UPDATE")) {
-					ps.setLong(1, fileid);
-					try (ResultSet rs = ps.executeQuery()) {
-						if( !rs.next() ) {
-							throw new FileNotFoundException("The file " + fileid + " was deleted while it was being locked");
-						}
-					}
+				if( !takeMutex(mutex) ) {
+					mutex.rollback();
+					return false; // another process is taking a lock on this file and doesn't let go: busy
 				}
 				if( conflicts(mutex, start, end, shared) ) {
 					mutex.rollback();
@@ -256,6 +261,47 @@ final class JdbcLocks {
 				if( mutex != null ) {
 					quietlyClose(mutex);
 				}
+			}
+		}
+
+		/**
+		 * Take the file's mutex without waiting on it: {@code NOWAIT}, tried again for a short while,
+		 * since another locker holds it only for the moment it takes to look and claim. A tryLock must
+		 * not wait, so a mutex that stays taken (its holder stalled, or cut off and not yet noticed by
+		 * the database) means busy.
+		 * @return false if it stayed taken
+		 */
+		private boolean takeMutex(Connection mutex) throws SQLException, IOException {
+			long sleep = 1;
+			long deadline = System.nanoTime() + MUTEX_WAIT_NANOS;
+			while (true) {
+				Savepoint sp = dialect == Dialect.POSTGRESQL ? mutex.setSavepoint() : null;
+				try (PreparedStatement ps = mutex.prepareStatement("SELECT fileid FROM " + TABLE + " WHERE fileid = ? FOR UPDATE NOWAIT")) {
+					ps.setLong(1, fileid);
+					try (ResultSet rs = ps.executeQuery()) {
+						if( !rs.next() ) {
+							throw new FileNotFoundException("The file " + fileid + " was deleted while it was being locked");
+						}
+						return true;
+					}
+				} catch (SQLException e) {
+					if( !dialect.isBusy(e) ) {
+						throw e;
+					}
+					if( sp != null ) {
+						mutex.rollback(sp); // PostgreSQL aborts the transaction on an error otherwise
+					}
+				}
+				if( System.nanoTime() - deadline > 0 ) {
+					return false;
+				}
+				try {
+					Thread.sleep(sleep);
+				} catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+					throw new java.nio.channels.FileLockInterruptionException();
+				}
+				sleep = Math.min(sleep * 2, 10);
 			}
 		}
 
