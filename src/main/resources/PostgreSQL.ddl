@@ -43,9 +43,22 @@ CREATE TABLE file_source.file_data (
 
 DROP TABLE file_source.file_lock;
 
--- File locks (FileSource.lock): one row per locked file, row-locked by the holder.
--- Used by PostgreSQL, MySQL 8 and MariaDB 10.3+, and created on connect if missing.
+-- File locks (FileSource.lock), used by PostgreSQL, MySQL 8 and MariaDB 10.3+, and created on
+-- connect if missing. file_lock: one row per locked file, row-locked briefly while a lock is taken.
+-- file_lock_range: one row per region held, kept row-locked by its holder until it is released.
 CREATE TABLE file_source.file_lock (
 	FILEID BIGINT NOT NULL PRIMARY KEY
+	)
+	;
+
+DROP TABLE file_source.file_lock_range;
+
+CREATE TABLE file_source.file_lock_range (
+	FILEID BIGINT NOT NULL,
+	ID BIGINT NOT NULL,
+	START_POS BIGINT NOT NULL,
+	END_POS BIGINT NOT NULL,
+	SHARED BOOLEAN NOT NULL,
+	PRIMARY KEY (FILEID, ID)
 	)
 	;

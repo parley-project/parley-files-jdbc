@@ -60,27 +60,34 @@ Where the database can, it keeps the locks, so they reach every process on every
 | MariaDB 10.3+ | in the database (`CLUSTER`) |
 | HSQLDB, others | this JVM only (`PROCESS`): they can't refuse a row lock without waiting |
 
-Each locked file has a row in `file_source.file_lock`, keyed by its `fileid`. A lock is a row lock on that row
-(`SELECT ... FOR UPDATE NOWAIT`, or `FOR SHARE NOWAIT` for a shared lock) in a transaction held open, on a
-connection of its own, until the lock is released. Nothing else uses that table, so the holder reads, writes and
+A lock covers a region of a file (the whole file unless a region is asked for). Each region held is a row in
+`file_source.file_lock_range` (the file's `fileid`, the region, shared or not), and the holder keeps that row
+locked (`SELECT ... FOR UPDATE`) in a transaction open, on a connection of its own, until the lock is released:
+the row says what is held, its row lock says the holder is alive. A lock is taken under a short mutex, a row lock
+on the file's row in `file_source.file_lock`: the locker checks the regions that overlap its own, removes stale
+ones (rows nobody keeps locked: their holder died), and either finds a live one it can't share and gives up, or
+adds its row, locks it, and lets the mutex go. Nothing else uses these tables, so the holder reads, writes and
 renames the file as usual while it holds the lock; the file's own rows are never locked. The lock is on the file,
 not its name, so it stays with the file through a rename. If the holder dies, its connection drops and the
-database frees the lock.
+database frees its row lock, so its region is free.
 
 Each lock holds one database connection, opened for it (not taken from the pool, which closes connections that
 are idle for long). A database that closes idle connections (MySQL's `wait_timeout`, 8 hours by default) frees a
-lock held longer than that. Rows of deleted files are removed when a factory connects, except rows still locked.
+lock held longer than that. Rows of deleted files are removed when a factory connects, except rows still locked. Each lock held keeps one
+connection open, so many locks held at once need a database that allows as many connections.
 
 ## Upgrading an existing database
 
-The lock table is new in 1.1.0. It is created when the factory connects, unless `jdbcUpgradeSchema` is `false`;
-to create it yourself (the `.ddl` files have it too):
+The lock tables are new in 1.1.0. They are created when the factory connects, unless `jdbcUpgradeSchema` is
+`false`; to create them yourself (the `.ddl` files have them too):
 
 ```sql
 CREATE TABLE file_source.file_lock (FILEID BIGINT NOT NULL PRIMARY KEY);
+CREATE TABLE file_source.file_lock_range (FILEID BIGINT NOT NULL, ID BIGINT NOT NULL, START_POS BIGINT NOT NULL,
+    END_POS BIGINT NOT NULL, SHARED BOOLEAN NOT NULL, PRIMARY KEY (FILEID, ID));
 ```
 
-Without it, locks reach only this JVM (a warning is logged).
+Without them, locks reach only this JVM (a warning is logged).
 
 The `owner` and `group_name` columns were `VARCHAR(10)`, too short for many user ids.
 New schemas (the `.ddl` files in `src/main/resources/`) use `VARCHAR(128)`. An existing schema is

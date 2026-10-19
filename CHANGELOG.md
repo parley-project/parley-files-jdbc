@@ -6,13 +6,16 @@ Needs parley-files 1.1.0.
 
 ### Added
 
-- File locks (`lock()`, `tryLock()`, see parley-files). On PostgreSQL 10+, MySQL 8+ and MariaDB 10.3+
-  the database keeps them (`getLockScope()` is `CLUSTER`): a row lock on the file's row in the new
-  `file_source.file_lock` table, held on a connection of its own until the lock is released. The holder
-  works on the file as usual, the lock stays with the file through a rename, and a dead holder's locks
-  are freed by the database. Other databases (HSQLDB) lock within this JVM (`PROCESS`).
-- The `file_source.file_lock` table, in every `.ddl` file and created on connect when missing (unless
-  `jdbcUpgradeSchema` is `false`). Rows of deleted files are removed on connect.
+- File locks, regions included (`lock()`, `tryLock()`, see parley-files). On PostgreSQL 10+, MySQL 8+ and
+  MariaDB 10.3+ the database keeps them (`getLockScope()` is `CLUSTER`): each region held is a row in
+  the new `file_source.file_lock_range` table, kept row-locked on a connection of its own until the lock
+  is released, and taken under a short mutex on the file's row in `file_source.file_lock`. The holder
+  works on the file as usual, the lock stays with the file through a rename, and a dead holder's regions
+  are free again (its row is no longer locked, and the next locker removes it). Other databases (HSQLDB)
+  lock within this JVM (`PROCESS`).
+- The `file_source.file_lock` and `file_source.file_lock_range` tables, in every `.ddl` file and created
+  on connect when missing (unless `jdbcUpgradeSchema` is `false`). Rows of deleted files are removed on
+  connect.
 
 ### Changed (no code change needed)
 

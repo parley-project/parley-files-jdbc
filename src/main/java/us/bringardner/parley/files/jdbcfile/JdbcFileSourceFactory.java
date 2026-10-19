@@ -74,7 +74,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	public static final String DEFAULT_GROUP = "staff";
 	/**
 	 * "false" leaves an older schema alone; otherwise, on connect, narrow owner/group columns are
-	 * widened and the lock table (file_source.file_lock) is created where locks are kept in the database.
+	 * widened and the lock tables (file_source.file_lock, file_lock_range) are created where locks are kept in the database.
 	 */
 	public static final String JDBC_UPGRADE_SCHEMA = "jdbcUpgradeSchema";
 	/**
@@ -579,13 +579,15 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 		}
 		try {
 			if( upgrade ) {
-				JdbcLocks.createTable(con);
+				JdbcLocks.createTables(con);
 			}
-			try(Statement st = con.createStatement(); ResultSet rs = st.executeQuery("SELECT fileid FROM "+JdbcLocks.TABLE+" WHERE 1 = 0")) {
-				// the table is there
+			try(Statement st = con.createStatement()) {
+				// both tables are there
+				st.executeQuery("SELECT fileid FROM "+JdbcLocks.TABLE+" WHERE 1 = 0").close();
+				st.executeQuery("SELECT fileid FROM "+JdbcLocks.RANGES+" WHERE 1 = 0").close();
 			}
 		} catch (SQLException | RuntimeException e) {
-			logWarn("No lock table ("+JdbcLocks.TABLE+", see README); file locks reach only this JVM: "+e);
+			logWarn("No lock tables ("+JdbcLocks.TABLE+", "+JdbcLocks.RANGES+", see README); file locks reach only this JVM: "+e);
 			return null;
 		}
 		try {

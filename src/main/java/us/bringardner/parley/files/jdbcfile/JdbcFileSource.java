@@ -1810,21 +1810,22 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	}
 
 	/**
-	 * A lock on the file (a link's target, for a link), kept by the database where it can (see
-	 * {@link #getLockScope()}): a row lock on the file's row in {@code file_source.file_lock}, held on
-	 * a connection of its own until the lock is released. The file's own rows are never locked, so
-	 * the holder reads and writes it as usual. The lock is on the file, not its name: it stays with
-	 * the file when it is renamed.
+	 * A lock on a region of the file (a link's target, for a link), kept by the database where it can
+	 * (see {@link #getLockScope()}): a row for the region in {@code file_source.file_lock_range}, kept
+	 * row-locked on a connection of its own until the lock is released (see {@code JdbcLocks}). The
+	 * file's own rows are never locked, so the holder reads and writes it as usual. The lock is on the
+	 * file, not its name: it stays with the file when it is renamed.
 	 * @since 1.1.0
 	 */
 	@Override
-	public FileSourceLock tryLock(boolean shared) throws IOException {
+	public FileSourceLock tryLock(long position, long size, boolean shared) throws IOException {
+		size = LockManager.checkRange(position, size);
 		LockManager.requireExists(this);
 		long id = rowId();
 		JdbcLocks.Dialect dialect = factory.lockDialect();
 		String key = "jdbc|" + factory.getConnectProperties().getProperty(JdbcFileSourceFactory.JDBC_URL, "") + "|" + id;
 		LockBackend backend = dialect == null ? LockBackend.inProcess() : new JdbcLocks.Backend(factory, dialect, id);
-		return LockManager.get().tryAcquire(this, key, shared, backend);
+		return LockManager.get().tryAcquire(this, key, position, size, shared, backend);
 	}
 
 }

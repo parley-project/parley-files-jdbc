@@ -173,8 +173,8 @@ public class JdbcPostgresLockTest extends AbstractLockTests {
 			try (Connection con = DriverManager.getConnection(url); Statement st = con.createStatement()) {
 				con.setAutoCommit(false);
 				SQLException e = assertThrows(SQLException.class, () -> st.executeQuery(
-						"SELECT l.fileid FROM file_source.file_lock l JOIN file_source.file f ON f.fileid = l.fileid "
-								+ "WHERE f.name = 'moved' FOR UPDATE OF l NOWAIT"));
+						"SELECT r.id FROM file_source.file_lock_range r JOIN file_source.file f ON f.fileid = r.fileid "
+								+ "WHERE f.name = 'moved' FOR UPDATE OF r NOWAIT"));
 				assertEquals("55P03", e.getSQLState());
 				con.rollback();
 			}
@@ -194,23 +194,44 @@ public class JdbcPostgresLockTest extends AbstractLockTests {
 		try {
 			assertTrue(gone.delete());
 			assertTrue(kept.delete());
-			assertTrue(lockRows() >= 2);
+			assertTrue(orphanRows("file_source.file_lock") >= 2);
 			JdbcFileSourceFactory other = connect(url);
 			other.disConnect();
-			assertEquals(1, orphanRows(), "the held one is skipped, the other removed");
+			assertEquals(1, orphanRows("file_source.file_lock_range"), "the held region is skipped");
+			assertEquals(0, orphanRows("file_source.file_lock"), "the files' mutex rows are removed");
 		} finally {
 			held.release();
 		}
 		assertFalse(held.isValid());
 	}
 
-	private static int lockRows() throws SQLException {
-		return count("SELECT count(*) FROM file_source.file_lock");
+	private static int orphanRows(String table) throws SQLException {
+		return count("SELECT count(*) FROM " + table + " l WHERE NOT EXISTS "
+				+ "(SELECT 1 FROM file_source.file f WHERE f.fileid = l.fileid)");
 	}
 
-	private static int orphanRows() throws SQLException {
-		return count("SELECT count(*) FROM file_source.file_lock l WHERE NOT EXISTS "
-				+ "(SELECT 1 FROM file_source.file f WHERE f.fileid = l.fileid)");
+	/** A holder that dies leaves its row behind; the next locker finds it stale and takes the region. */
+	@Test
+	public void aDeadHoldersRowIsTakenOver() throws Exception {
+		FileSource f = file("stale");
+		FileSourceLock l = f.tryLock(0, 10, false);
+		assertNotNull(l);
+		long fileid;
+		try (Connection con = DriverManager.getConnection(url); Statement st = con.createStatement();
+				ResultSet rs = st.executeQuery("SELECT fileid FROM file_source.file WHERE name = 'stale'")) {
+			assertTrue(rs.next());
+			fileid = rs.getLong(1);
+		}
+		l.release();
+		// what a holder that died leaves: its row, with no connection keeping it locked
+		try (Connection con = DriverManager.getConnection(url); Statement st = con.createStatement()) {
+			st.executeUpdate("INSERT INTO file_source.file_lock_range (fileid, id, start_pos, end_pos, shared) VALUES ("
+					+ fileid + ", 42, 0, 10, false)");
+		}
+		FileSourceLock again = f.tryLock(5, 10, false);
+		assertNotNull(again, "the stale claim doesn't keep anyone out");
+		again.release();
+		assertEquals(0, count("SELECT count(*) FROM file_source.file_lock_range WHERE id = 42"), "and it was removed");
 	}
 
 	private static int count(String sql) throws SQLException {

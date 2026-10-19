@@ -7,10 +7,14 @@ import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.sql.Savepoint;
 import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
+import java.security.SecureRandom;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 
@@ -19,13 +23,21 @@ import us.bringardner.parley.files.lock.LockBackend;
 /**
  * File locks kept by the database, so they reach every process (on any machine) that uses it.
  * <p>
- * Each locked file has a row in {@code file_source.file_lock}, keyed by its {@code fileid}. A lock
- * is a row lock on that row ({@code SELECT ... FOR UPDATE NOWAIT}, or {@code FOR SHARE NOWAIT} for a
- * shared lock), taken in a transaction that stays open on a connection of its own until the lock is
- * released. Nothing else ever writes to that table, so the holder reads and writes the file as
- * usual; and if the holder dies, its connection drops and the database frees the lock.
+ * A lock covers a region of a file. Each region held is a row in {@code file_source.file_lock_range}
+ * (the file's {@code fileid}, the region, shared or not), and the holder keeps that row locked
+ * ({@code SELECT ... FOR UPDATE}) in a transaction open on a connection of its own until the lock is
+ * released: the row says what is held, and its row lock says the holder is alive. If the holder
+ * dies, its connection drops, the database frees the row lock, and the row is left behind as a
+ * stale claim that the next locker removes.
  * <p>
- * The connection is opened for the lock, not taken from the factory's pool, which closes
+ * Taking a lock is done under a short mutex, a row lock on the file's row in
+ * {@code file_source.file_lock}: the locker looks at every region that overlaps the one it wants,
+ * removes the stale ones (it can row-lock them, so their holder is gone), and either finds one held
+ * by a live holder that conflicts (both exclusive, or one of them) and gives up, or inserts its row,
+ * locks it on its own connection, and only then lets the mutex go. Nothing else ever writes to these
+ * tables, so the holder reads and writes the file as usual.
+ * <p>
+ * The connection that holds a lock is opened for it, not taken from the factory's pool, which closes
  * connections that are idle for long.
  * <p>
  * Only databases that can refuse a row lock without waiting ({@code NOWAIT}) get these locks:
@@ -36,26 +48,25 @@ final class JdbcLocks {
 
 	private static final Logger LOG = Logger.getLogger(JdbcLocks.class.getName());
 
+	/** One row per locked file: the mutex for taking its locks. */
 	static final String TABLE = "file_source.file_lock";
+	/** One row per region held, kept row-locked by its holder. */
+	static final String RANGES = "file_source.file_lock_range";
+
+	private static final SecureRandom IDS = new SecureRandom();
 
 	/** The SQL each database needs. */
 	enum Dialect {
-		POSTGRESQL("FOR UPDATE NOWAIT", "FOR SHARE NOWAIT", true),
-		MYSQL("FOR UPDATE NOWAIT", "FOR SHARE NOWAIT", true),
-		MARIADB("FOR UPDATE NOWAIT", "LOCK IN SHARE MODE NOWAIT", false);
+		POSTGRESQL(true), MYSQL(true), MARIADB(false);
 
-		final String exclusive;
-		final String shared;
 		/** Whether it has SKIP LOCKED (MariaDB only from 10.6), used to clear rows of deleted files. */
 		final boolean skipLocked;
 
-		Dialect(String exclusive, String shared, boolean skipLocked) {
-			this.exclusive = exclusive;
-			this.shared = shared;
+		Dialect(boolean skipLocked) {
 			this.skipLocked = skipLocked;
 		}
 
-		/** Whether a failed lock means "held by someone else" (rather than an error). */
+		/** Whether a failed NOWAIT lock means "held by someone else" (rather than an error). */
 		boolean isBusy(SQLException e) {
 			switch (this) {
 			case POSTGRESQL:
@@ -95,13 +106,15 @@ final class JdbcLocks {
 	}
 
 	/**
-	 * Create the lock table if it is missing.
+	 * Create the lock tables if they are missing.
 	 * @param con a connection
-	 * @throws SQLException if it can't be created
+	 * @throws SQLException if they can't be created
 	 */
-	static void createTable(Connection con) throws SQLException {
+	static void createTables(Connection con) throws SQLException {
 		try (Statement st = con.createStatement()) {
 			st.executeUpdate("CREATE TABLE IF NOT EXISTS " + TABLE + " (fileid BIGINT NOT NULL PRIMARY KEY)");
+			st.executeUpdate("CREATE TABLE IF NOT EXISTS " + RANGES + " (fileid BIGINT NOT NULL, id BIGINT NOT NULL, "
+					+ "start_pos BIGINT NOT NULL, end_pos BIGINT NOT NULL, shared BOOLEAN NOT NULL, PRIMARY KEY (fileid, id))");
 		}
 		if( !con.getAutoCommit() ) {
 			con.commit();
@@ -124,25 +137,33 @@ final class JdbcLocks {
 		boolean auto = con.getAutoCommit();
 		con.setAutoCommit(false);
 		try {
-			List<Long> ids = new ArrayList<>();
-			try (Statement st = con.createStatement();
-					ResultSet rs = st.executeQuery("SELECT l.fileid FROM " + TABLE + " l WHERE NOT EXISTS "
-							+ "(SELECT 1 FROM file_source.file f WHERE f.fileid = l.fileid) FOR UPDATE SKIP LOCKED")) {
-				while (rs.next()) {
-					ids.add(rs.getLong(1));
+			int n = 0;
+			for (String table : new String[] {RANGES, TABLE}) {
+				List<long[]> rows = new ArrayList<>();
+				boolean ranges = table.equals(RANGES);
+				try (Statement st = con.createStatement();
+						ResultSet rs = st.executeQuery("SELECT l.fileid" + (ranges ? ", l.id" : "") + " FROM " + table
+								+ " l WHERE NOT EXISTS (SELECT 1 FROM file_source.file f WHERE f.fileid = l.fileid) FOR UPDATE SKIP LOCKED")) {
+					while (rs.next()) {
+						rows.add(new long[] {rs.getLong(1), ranges ? rs.getLong(2) : 0});
+					}
 				}
-			}
-			try (PreparedStatement ps = con.prepareStatement("DELETE FROM " + TABLE + " WHERE fileid = ?")) {
-				for (long id : ids) {
-					ps.setLong(1, id);
-					ps.addBatch();
+				try (PreparedStatement ps = con.prepareStatement("DELETE FROM " + table + " WHERE fileid = ?" + (ranges ? " AND id = ?" : ""))) {
+					for (long[] r : rows) {
+						ps.setLong(1, r[0]);
+						if( ranges ) {
+							ps.setLong(2, r[1]);
+						}
+						ps.addBatch();
+					}
+					if( !rows.isEmpty() ) {
+						ps.executeBatch();
+					}
 				}
-				if( !ids.isEmpty() ) {
-					ps.executeBatch();
-				}
+				n += rows.size();
 			}
 			con.commit();
-			return ids.size();
+			return n;
 		} catch (SQLException | RuntimeException e) {
 			con.rollback();
 			throw e;
@@ -151,12 +172,27 @@ final class JdbcLocks {
 		}
 	}
 
-	/** The database side of one lock on one file. */
+	private static long end(long position, long size) {
+		return size > Long.MAX_VALUE - position ? Long.MAX_VALUE : position + size;
+	}
+
+	/** The database side of the regions one JVM holds of one file. */
 	static final class Backend implements LockBackend {
 		private final JdbcFileSourceFactory factory;
 		private final Dialect dialect;
 		private final long fileid;
-		private Connection con;
+		/** Each region held: its row id and the connection that keeps the row locked. */
+		private final Map<String, Held> held = new HashMap<>();
+
+		private static final class Held {
+			final long id;
+			final Connection con;
+
+			Held(long id, Connection con) {
+				this.id = id;
+				this.con = con;
+			}
+		}
 
 		Backend(JdbcFileSourceFactory factory, Dialect dialect, long fileid) {
 			this.factory = factory;
@@ -164,41 +200,177 @@ final class JdbcLocks {
 			this.fileid = fileid;
 		}
 
+		private static String key(long position, long size) {
+			return position + "+" + size;
+		}
+
 		@Override
-		public synchronized boolean acquire(boolean shared) throws IOException {
-			ensureRow();
-			Connection c = null;
+		public synchronized boolean acquire(long position, long size, boolean shared) throws IOException {
+			ensureMutexRow();
+			long start = position;
+			long end = end(position, size);
+			Connection mutex = null;
+			Connection holder = null;
+			long id = 0;
+			boolean inserted = false;
 			try {
-				c = factory.openLockConnection();
-				c.setAutoCommit(false);
-				try (PreparedStatement ps = c.prepareStatement("SELECT fileid FROM " + TABLE + " WHERE fileid = ? "
-						+ (shared ? dialect.shared : dialect.exclusive))) {
+				mutex = factory.getConnection();
+				mutex.setAutoCommit(false);
+				try (PreparedStatement ps = mutex.prepareStatement("SELECT fileid FROM " + TABLE + " WHERE fileid = ? FOR UPDATE")) {
 					ps.setLong(1, fileid);
 					try (ResultSet rs = ps.executeQuery()) {
 						if( !rs.next() ) {
 							throw new FileNotFoundException("The file " + fileid + " was deleted while it was being locked");
 						}
 					}
-				} catch (SQLException e) {
-					if( dialect.isBusy(e) ) {
-						quietlyClose(c);
-						return false;
-					}
-					throw e;
 				}
-				con = c;
+				if( conflicts(mutex, start, end, shared) ) {
+					mutex.rollback();
+					return false;
+				}
+				// claim the region: a committed row, which this lock's own connection row-locks before
+				// the mutex goes, so no other locker can find it unlocked and take it for stale
+				id = insertRow(start, end, shared);
+				inserted = true;
+				holder = factory.openLockConnection();
+				holder.setAutoCommit(false);
+				try (PreparedStatement ps = holder.prepareStatement("SELECT id FROM " + RANGES + " WHERE fileid = ? AND id = ? FOR UPDATE NOWAIT")) {
+					ps.setLong(1, fileid);
+					ps.setLong(2, id);
+					try (ResultSet rs = ps.executeQuery()) {
+						if( !rs.next() ) {
+							throw new SQLException("The lock row " + id + " of file " + fileid + " vanished");
+						}
+					}
+				}
+				mutex.commit(); // lets the mutex go, with any stale rows removed
+				held.put(key(position, size), new Held(id, holder));
 				return true;
 			} catch (SQLException e) {
-				quietlyClose(c);
+				undo(mutex, holder, inserted, id);
 				throw new IOException("Can't lock file " + fileid + " in the database: " + e.getMessage(), e);
 			} catch (IOException | RuntimeException e) {
-				quietlyClose(c);
+				undo(mutex, holder, inserted, id);
 				throw e;
+			} finally {
+				if( mutex != null ) {
+					quietlyClose(mutex);
+				}
 			}
 		}
 
-		/** Make sure the file has a row to lock: insert it, or find it is there already. */
-		private void ensureRow() throws IOException {
+		/**
+		 * Whether a live holder has a region that overlaps [start, end) and can't share it. Stale
+		 * claims (a row that can be row-locked has no live holder) are deleted on the way, in the
+		 * mutex's transaction. Called with the mutex held.
+		 */
+		private boolean conflicts(Connection mutex, long start, long end, boolean shared) throws SQLException {
+			List<long[]> overlapping = new ArrayList<>();
+			try (PreparedStatement ps = mutex.prepareStatement("SELECT id, shared FROM " + RANGES
+					+ " WHERE fileid = ? AND start_pos < ? AND ? < end_pos")) {
+				ps.setLong(1, fileid);
+				ps.setLong(2, end);
+				ps.setLong(3, start);
+				try (ResultSet rs = ps.executeQuery()) {
+					while (rs.next()) {
+						overlapping.add(new long[] {rs.getLong(1), rs.getBoolean(2) ? 1 : 0});
+					}
+				}
+			}
+			for (long[] row : overlapping) {
+				boolean live;
+				Savepoint sp = dialect == Dialect.POSTGRESQL ? mutex.setSavepoint() : null;
+				try (PreparedStatement ps = mutex.prepareStatement("SELECT id FROM " + RANGES + " WHERE fileid = ? AND id = ? FOR UPDATE NOWAIT")) {
+					ps.setLong(1, fileid);
+					ps.setLong(2, row[0]);
+					try (ResultSet rs = ps.executeQuery()) {
+						live = false; // locked it ourselves: nobody holds it
+						if( rs.next() ) {
+							try (PreparedStatement del = mutex.prepareStatement("DELETE FROM " + RANGES + " WHERE fileid = ? AND id = ?")) {
+								del.setLong(1, fileid);
+								del.setLong(2, row[0]);
+								del.executeUpdate();
+							}
+						}
+					}
+				} catch (SQLException e) {
+					if( !dialect.isBusy(e) ) {
+						throw e;
+					}
+					if( sp != null ) {
+						mutex.rollback(sp); // PostgreSQL aborts the transaction on an error otherwise
+					}
+					live = true;
+				}
+				if( live && !(shared && row[1] == 1) ) {
+					return true;
+				}
+			}
+			return false;
+		}
+
+		private long insertRow(long start, long end, boolean shared) throws SQLException, IOException {
+			try (Connection c = factory.getConnection()) {
+				c.setAutoCommit(true);
+				for (int attempt = 0;; attempt++) {
+					long id = IDS.nextLong() & Long.MAX_VALUE;
+					try (PreparedStatement ps = c.prepareStatement("INSERT INTO " + RANGES
+							+ " (fileid, id, start_pos, end_pos, shared) VALUES (?, ?, ?, ?, ?)")) {
+						ps.setLong(1, fileid);
+						ps.setLong(2, id);
+						ps.setLong(3, start);
+						ps.setLong(4, end);
+						ps.setBoolean(5, shared);
+						ps.executeUpdate();
+						return id;
+					} catch (SQLException e) {
+						if( attempt > 3 || e.getSQLState() == null || !e.getSQLState().startsWith("23") ) {
+							throw e;
+						}
+						// the same random id twice: draw another
+					}
+				}
+			}
+		}
+
+		private void undo(Connection mutex, Connection holder, boolean inserted, long id) {
+			if( holder != null ) {
+				try {
+					holder.rollback();
+				} catch (SQLException e) {
+					LOG.log(Level.FINE, "Rolling back a lock connection", e);
+				}
+				quietlyClose(holder);
+			}
+			if( inserted ) {
+				deleteRow(id);
+			}
+			if( mutex != null ) {
+				try {
+					mutex.rollback();
+				} catch (SQLException e) {
+					LOG.log(Level.FINE, "Rolling back the lock mutex", e);
+				}
+			}
+		}
+
+		private void deleteRow(long id) {
+			try (Connection c = factory.getConnection();
+					PreparedStatement ps = c.prepareStatement("DELETE FROM " + RANGES + " WHERE fileid = ? AND id = ?")) {
+				ps.setLong(1, fileid);
+				ps.setLong(2, id);
+				ps.executeUpdate();
+				if( !c.getAutoCommit() ) {
+					c.commit();
+				}
+			} catch (SQLException | IOException e) {
+				// left as a stale claim: the next locker removes it
+				LOG.log(Level.FINE, "Removing lock row " + id, e);
+			}
+		}
+
+		/** Make sure the file has a mutex row: insert it, or find it is there already. */
+		private void ensureMutexRow() throws IOException {
 			try (Connection c = factory.getConnection()) {
 				try (PreparedStatement ps = c.prepareStatement("SELECT fileid FROM " + TABLE + " WHERE fileid = ?")) {
 					ps.setLong(1, fileid);
@@ -226,16 +398,36 @@ final class JdbcLocks {
 		}
 
 		@Override
-		public synchronized void release() {
-			Connection c = con;
-			con = null;
-			if( c != null ) {
-				try {
-					c.rollback(); // ends the transaction, which frees the row lock
-				} catch (SQLException e) {
-					LOG.log(Level.FINE, "Rolling back the lock on file " + fileid, e);
+		public synchronized void release(long position, long size) {
+			Held h = held.remove(key(position, size));
+			if( h == null ) {
+				return;
+			}
+			try {
+				// the holder's own connection still has the row locked: delete it and end the transaction
+				try (PreparedStatement ps = h.con.prepareStatement("DELETE FROM " + RANGES + " WHERE fileid = ? AND id = ?")) {
+					ps.setLong(1, fileid);
+					ps.setLong(2, h.id);
+					ps.executeUpdate();
 				}
-				quietlyClose(c);
+				h.con.commit();
+			} catch (SQLException e) {
+				// the row stays as a stale claim (its row lock ends with the connection), removed by the next locker
+				LOG.log(Level.FINE, "Removing lock row " + h.id + " of file " + fileid, e);
+				try {
+					h.con.rollback();
+				} catch (SQLException e2) {
+					LOG.log(Level.FINE, "Rolling back a lock connection", e2);
+				}
+			}
+			quietlyClose(h.con);
+		}
+
+		@Override
+		public synchronized void close() {
+			for (String k : new ArrayList<>(held.keySet())) {
+				String[] p = k.split("\\+");
+				release(Long.parseLong(p[0]), Long.parseLong(p[1]));
 			}
 		}
 
@@ -251,7 +443,7 @@ final class JdbcLocks {
 
 		@Override
 		public String toString() {
-			return "database lock on file " + fileid;
+			return "database locks on file " + fileid;
 		}
 	}
 }
