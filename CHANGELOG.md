@@ -14,6 +14,12 @@ Needs parley-files 1.1.0.
 - The `file_source.file_lock` table, in every `.ddl` file and created on connect when missing (unless
   `jdbcUpgradeSchema` is `false`). Rows of deleted files are removed on connect.
 
+### Changed (no code change needed)
+
+- `createNewFile()` and `mkdir()` return `false` to a caller that loses a race for the same path (the
+  database's unique key let another insert in first), as FileSource's contract requires; it was an
+  `IOException`.
+
 ## parley-files-jdbc 1.0.0 (2026-10-16)
 
 BjlFileSystemJdbc (`us.bringardner:bjl_file_system_jdbc` 1.0.0-SNAPSHOT) is now **parley-files-jdbc**,

@@ -337,6 +337,10 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		return mine.compareTo(String.valueOf(arg0));
 	}
 
+	/**
+	 * Atomic, as the contract requires: the database's unique key on (parentid, name) lets only one
+	 * of several racing inserts in, and the others return false.
+	 */
 	@Override
 	public boolean createNewFile() throws IOException {
 		boolean ret = false;
@@ -1201,6 +1205,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		return listFiles();
 	}
 
+	/** Atomic, as {@link #createNewFile()} is: the unique key on (parentid, name) decides. */
 	@Override
 	public boolean mkdir() throws IOException {
 		if( 
@@ -1235,13 +1240,36 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 		long pid = parent == null ? 0 : parent.rowId();
 		forgetResolution();
-		boolean made = executeUpdate(sql, name,pid,owner,file_type, DIRECTORY.equals(file_type)) == 1;
+		boolean made;
+		try {
+			made = executeUpdate(sql, name,pid,owner,file_type, DIRECTORY.equals(file_type)) == 1;
+		} catch (IOException e) {
+			if( isDuplicateKey(e) ) {
+				// another caller made it first: UNIQUE(parentid, name) let only one insert in, which is
+				// what keeps createNewFile() and mkdir() atomic; the others are told false
+				fieldCache.clear();
+				changed();
+				return false;
+			}
+			throw e;
+		}
 		if( made ) {
 			touchParent();
 		}
 		return made;
 	}
 
+
+	/** The insert broke a unique key (SQLSTATE class 23, integrity constraint violation). */
+	private static boolean isDuplicateKey(IOException e) {
+		for (Throwable t = e.getCause(); t != null; t = t.getCause()) {
+			if( t instanceof SQLException ) {
+				String state = ((SQLException) t).getSQLState();
+				return state != null && state.startsWith("23");
+			}
+		}
+		return false;
+	}
 
 	@Override
 	public boolean mkdirs() throws IOException {
