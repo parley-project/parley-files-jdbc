@@ -37,7 +37,7 @@ import java.io.OutputStream;
  * @author Tony Bringardner
  *
  */
-public class JdbcFileOutputStream extends OutputStream {
+public class JdbcFileOutputStream extends OutputStream implements us.bringardner.parley.files.Syncable {
 
 
 	/*
@@ -88,6 +88,15 @@ public class JdbcFileOutputStream extends OutputStream {
 		
 	}
 	
+	/**
+	 * Writes what is held (see {@link #flush()}). Each write is committed, so that is as durable as
+	 * the database makes it.
+	 */
+	@Override
+	public void sync() throws IOException {
+		flush();
+	}
+
 	public void flush() throws IOException {
 
 		if( !isClosed && pointer > 0 ){

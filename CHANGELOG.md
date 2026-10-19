@@ -19,6 +19,8 @@ Needs parley-files 1.1.0.
 
 ### Changed (no code change needed)
 
+- The output stream is `Syncable` (parley-files): `sync()` writes the chunk it holds, committed like every
+  write, so `FileChannel.force()` no longer returns with data still in the buffer.
 - `createNewFile()` and `mkdir()` return `false` to a caller that loses a race for the same path (the
   database's unique key let another insert in first), as FileSource's contract requires; it was an
   `IOException`.
