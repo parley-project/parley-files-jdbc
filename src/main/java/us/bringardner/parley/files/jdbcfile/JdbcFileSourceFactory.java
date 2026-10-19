@@ -54,8 +54,19 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * @author Tony Bringardner
+ * FileSource factory for a file system kept in a database (tables {@code file_source.file} and {@code file_data}), through JDBC.
+ * <p>
+ * <h2>Locks, atomic create and FileChannel</h2>
+ * <ul>
+ * <li><b>Locks:</b> {@code CLUSTER} scope on PostgreSQL 10+, MySQL 8+ and MariaDB 10.3+ with the lock tables ({@code file_source.file_lock}, {@code file_lock_range}, created on connect): every process on every machine that uses the database. Each region held is a row kept row-locked by its holder's own connection (one database connection per lock held); a dead holder's regions are free again. Range locks work. On other databases (HSQLDB) {@code PROCESS} scope: this JVM only.</li>
+ * <li><b>Atomic create:</b> {@code createNewFile()} and {@code mkdir()} are atomic: the unique key on (parentid, name) lets one of several racing inserts in, and the others are told false.</li>
+ * <li><b>FileChannel:</b> reads and writes through the file's streams and random access.</li>
+ * <li><b>map():</b> {@code READ_ONLY} and {@code PRIVATE} map a local copy of the region, read when it is mapped; {@code READ_WRITE} throws {@code UnsupportedOperationException} (a copy can't write back).</li>
+ * <li><b>force():</b> writes the chunk a stream still holds; every write is committed, so that is as durable as the database makes it.</li>
+ * </ul>
+ * See parley-files' README ("Locking") for the rules every file system keeps.
  *
+ * @author Tony Bringardner
  */
 public class JdbcFileSourceFactory extends FileSourceFactory {
 

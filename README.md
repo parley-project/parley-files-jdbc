@@ -49,6 +49,17 @@ own data.
 
 ## Locking
 
+In short, for `JdbcFileSourceFactory`:
+
+| | |
+|---|---|
+| Locks | `CLUSTER` on PostgreSQL 10+, MySQL 8+, MariaDB 10.3+ (every machine using the database); `PROCESS` (this JVM) on HSQLDB and others. Range locks work. |
+| Atomic create | `createNewFile()` and `mkdir()` are atomic (the unique key on parentid, name) |
+| FileChannel | through the file's streams and random access |
+| `map()` | `READ_ONLY` and `PRIVATE` map a local copy of the region, read when it is mapped; `READ_WRITE` throws `UnsupportedOperationException` |
+| `force()` | writes the chunk a stream holds; each write is committed |
+
+
 Files can be locked as parley-files describes (`lock()`, `tryLock()`, shaped like NIO's `FileChannel.lock()`).
 Where the database can, it keeps the locks, so they reach every process on every machine that uses it
 (`getLockScope()` is `CLUSTER`):
