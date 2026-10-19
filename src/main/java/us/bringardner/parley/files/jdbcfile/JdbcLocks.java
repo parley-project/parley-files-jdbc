@@ -148,13 +148,32 @@ final class JdbcLocks {
 		try {
 			int n = 0;
 			for (String table : new String[] {RANGES, TABLE}) {
-				List<long[]> rows = new ArrayList<>();
+				List<long[]> candidates = new ArrayList<>();
 				boolean ranges = table.equals(RANGES);
+				// Find them without locking, then lock each one by its key. One locking query over the
+				// table would lock more than it returns on MySQL (InnoDB locks every row it reads), so
+				// it would hold rows of live files, among them a new lock's row before its holder
+				// locks it.
 				try (Statement st = con.createStatement();
 						ResultSet rs = st.executeQuery("SELECT l.fileid" + (ranges ? ", l.id" : "") + " FROM " + table
-								+ " l WHERE NOT EXISTS (SELECT 1 FROM file_source.file f WHERE f.fileid = l.fileid) FOR UPDATE SKIP LOCKED")) {
+								+ " l WHERE NOT EXISTS (SELECT 1 FROM file_source.file f WHERE f.fileid = l.fileid)")) {
 					while (rs.next()) {
-						rows.add(new long[] {rs.getLong(1), ranges ? rs.getLong(2) : 0});
+						candidates.add(new long[] {rs.getLong(1), ranges ? rs.getLong(2) : 0});
+					}
+				}
+				List<long[]> rows = new ArrayList<>();
+				try (PreparedStatement ps = con.prepareStatement("SELECT fileid FROM " + table + " WHERE fileid = ?"
+						+ (ranges ? " AND id = ?" : "") + " FOR UPDATE SKIP LOCKED")) {
+					for (long[] r : candidates) {
+						ps.setLong(1, r[0]);
+						if( ranges ) {
+							ps.setLong(2, r[1]);
+						}
+						try (ResultSet rs = ps.executeQuery()) {
+							if( rs.next() ) {
+								rows.add(r); // not held: a holder keeps its row locked
+							}
+						}
 					}
 				}
 				try (PreparedStatement ps = con.prepareStatement("DELETE FROM " + table + " WHERE fileid = ?" + (ranges ? " AND id = ?" : ""))) {
@@ -239,15 +258,7 @@ final class JdbcLocks {
 				inserted = true;
 				holder = factory.openLockConnection();
 				holder.setAutoCommit(false);
-				try (PreparedStatement ps = holder.prepareStatement("SELECT id FROM " + RANGES + " WHERE fileid = ? AND id = ? FOR UPDATE NOWAIT")) {
-					ps.setLong(1, fileid);
-					ps.setLong(2, id);
-					try (ResultSet rs = ps.executeQuery()) {
-						if( !rs.next() ) {
-							throw new SQLException("The lock row " + id + " of file " + fileid + " vanished");
-						}
-					}
-				}
+				lockOwnRow(holder, id);
 				mutex.commit(); // lets the mutex go, with any stale rows removed
 				held.put(key(position, size), new Held(id, holder));
 				return true;
@@ -261,6 +272,43 @@ final class JdbcLocks {
 				if( mutex != null ) {
 					quietlyClose(mutex);
 				}
+			}
+		}
+
+		/**
+		 * Row-lock the new region's row on its holder's connection. No other locker touches it (they
+		 * wait for the mutex), but something passing over the table can have it for a moment (a
+		 * tidy-up), so a refusal is tried again for the mutex's short while before it counts.
+		 */
+		private void lockOwnRow(Connection holder, long id) throws SQLException, IOException {
+			long sleep = 1;
+			long deadline = System.nanoTime() + MUTEX_WAIT_NANOS;
+			while (true) {
+				Savepoint sp = dialect == Dialect.POSTGRESQL ? holder.setSavepoint() : null;
+				try (PreparedStatement ps = holder.prepareStatement("SELECT id FROM " + RANGES + " WHERE fileid = ? AND id = ? FOR UPDATE NOWAIT")) {
+					ps.setLong(1, fileid);
+					ps.setLong(2, id);
+					try (ResultSet rs = ps.executeQuery()) {
+						if( !rs.next() ) {
+							throw new SQLException("The lock row " + id + " of file " + fileid + " vanished");
+						}
+						return;
+					}
+				} catch (SQLException e) {
+					if( !dialect.isBusy(e) || System.nanoTime() - deadline > 0 ) {
+						throw e;
+					}
+					if( sp != null ) {
+						holder.rollback(sp);
+					}
+				}
+				try {
+					Thread.sleep(sleep);
+				} catch (InterruptedException e) {
+					Thread.currentThread().interrupt();
+					throw new java.nio.channels.FileLockInterruptionException();
+				}
+				sleep = Math.min(sleep * 2, 10);
 			}
 		}
 
