@@ -1,5 +1,13 @@
 # Changelog
 
+## parley-files-jdbc 2.0.0 (unreleased)
+
+### Changed (needs a configuration change)
+
+- **Property names** (Parley 2.0.0): the connection settings `jdbcURL`, `jdbcUserid` and `Name` are `jdbcUrl`,
+  `jdbcUser` and `name` (saved connections need the new names); `parley.jdbc.bufferSize` is
+  `parley.files.jdbc.bufferSize`, and `JdbcFile.dbid` is `parley.files.jdbc.dbid`.
+
 ## parley-files-jdbc 1.1.0 (unreleased)
 
 Needs parley-files 1.1.0.

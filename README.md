@@ -21,7 +21,7 @@ implementing internet protocols. Put it on the class path and `FileSourceFactory
 
 ## Users and permissions
 
-A JDBC file system's current user is the database user (`jdbcUserid`); every file it
+A JDBC file system's current user is the database user (`jdbcUser`); every file it
 creates is owned by that user, so the owner permissions apply to it. Its group is the
 `jdbcGroup` connection property, default `staff` (the schema's default group for new
 files); set it empty for no group. Other database users get the group or other

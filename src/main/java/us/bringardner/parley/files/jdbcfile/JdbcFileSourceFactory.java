@@ -75,10 +75,10 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	public static final String FACTORY_ID = "Jdbc";
 
 	public static final String JDBC_DRIVER = "jdbcDriver";
-	public static final String JDBC_URL = "jdbcURL";
-	public static final String JDBC_USERID = "jdbcUserid";
+	public static final String JDBC_URL = "jdbcUrl";
+	public static final String JDBC_USERID = "jdbcUser";
 	public static final String JDBC_PASSWORD = "jdbcPassword";
-	public static final String JDBC_CONNECTION_NAME = "Name";
+	public static final String JDBC_CONNECTION_NAME = "name";
 	/** The group the database user belongs to for file permissions; empty means none. */
 	public static final String JDBC_GROUP = "jdbcGroup";
 	/** The schema's default GROUP_NAME for new files. */
@@ -99,7 +99,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	 * {@value #SYSTEM_PROPERTY_BUFFER_SIZE}.
 	 */
 	public static final String PROP_BUFFER_SIZE = "bufferSize";
-	public static final String SYSTEM_PROPERTY_BUFFER_SIZE = "parley.jdbc.bufferSize";
+	public static final String SYSTEM_PROPERTY_BUFFER_SIZE = "parley.files.jdbc.bufferSize";
 	public static final int DEFAULT_BUFFER_SIZE = 1024*100;
 	public static final int MIN_BUFFER_SIZE = 1024;
 	public static final int MAX_BUFFER_SIZE = 16*1024*1024;
@@ -130,7 +130,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	public static final String DEFAULT_CURRENT_DIR = "Default Current Directory";
 
 
-	public static final String DBID_PROP = "JdbcFile.dbid";
+	public static final String DBID_PROP = "parley.files.jdbc.dbid";
 	public  static final String KIDS = "kids";
 
 
@@ -254,7 +254,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	}
 
 	/**
-	 * The current user as this file system sees it: the database user (jdbcUserid),
+	 * The current user as this file system sees it: the database user (jdbcUser),
 	 * which is also the owner recorded for every file this factory creates, with
 	 * jdbcGroup (default "staff", the schema's default group) as its only group.
 	 * <p>
