@@ -12,7 +12,6 @@
 	</parent>
 
 	<artifactId>parley-files-jdbc</artifactId>
-	<version>2.0.0-SNAPSHOT</version>
 	<name>Parley Files JDBC</name>
 	<description>A parley-files FileSource implementation that keeps a file system in a database, via JDBC.
 		Found at runtime through ServiceLoader. Formerly us.bringardner:bjl_file_system_jdbc.</description>
@@ -58,25 +57,25 @@
 		<dependency>
 			<groupId>us.bringardner.parley</groupId>
 			<artifactId>parley-core</artifactId>
-			<version>2.0.0-SNAPSHOT</version>
+			<version>${project.version}</version>
 		</dependency>
 
 		<dependency>
 			<groupId>us.bringardner.parley</groupId>
 			<artifactId>parley-io</artifactId>
-			<version>2.0.0-SNAPSHOT</version>
+			<version>${project.version}</version>
 		</dependency>
 
 		<dependency>
 			<groupId>us.bringardner.parley</groupId>
 			<artifactId>parley-files</artifactId>
-			<version>2.0.0-SNAPSHOT</version>
+			<version>${project.version}</version>
 		</dependency>
 		<!-- The shared FileSource test suite -->
 		<dependency>
 			<groupId>us.bringardner.parley</groupId>
 			<artifactId>parley-files</artifactId>
-			<version>2.0.0-SNAPSHOT</version>
+			<version>${project.version}</version>
 			<type>test-jar</type>
 			<scope>test</scope>
 		</dependency>
