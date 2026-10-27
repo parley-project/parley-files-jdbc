@@ -1350,10 +1350,19 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		if( rowExists()) {
 			return false;
 		}
-		return ensureDirectory();
+		if( parent != null && !parent.ensureDirectory()) {
+			return false;
+		}
+		// (false if another process made it meanwhile: it isn't this call's)
+		return mkdir();
 	}
 
-	/** True if there is a directory at this path afterwards: it was there, or it and its parents were made. */
+	/**
+	 * True if there is a directory at this path afterwards: it was there, it and its parents were
+	 * made, or another process made it at the same time (its insert won: its directory is as good
+	 * as ours, so the rest of the path is made below it). A parent another process was making used
+	 * to stop the whole mkdirs, so two mail servers making one user's folder at once had one fail.
+	 */
 	private boolean ensureDirectory() throws IOException {
 		if( rowExists()) {
 			return isDirectory();
@@ -1361,7 +1370,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		if( parent != null && !parent.ensureDirectory()) {
 			return false;
 		}
-		return mkdir();
+		return mkdir() || isDirectory();
 	}
 
 	@Override
