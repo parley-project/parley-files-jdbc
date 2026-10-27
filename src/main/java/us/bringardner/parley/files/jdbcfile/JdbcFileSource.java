@@ -911,8 +911,11 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	@Override
 	public FileSource getChild(String arg0) throws IOException {
 		// a path that doesn't exist yet can still get children (then mkdirs), as in
-		// the other file systems; only an existing regular file can't
-		if( isDirectory() || !exists()) {
+		// the other file systems; only an existing regular file can't. One look decides: exists()
+		// first, then the type of the row it found (isDirectory() then exists() were two looks,
+		// so a folder another process made in between was "not a directory" yet "there": seen on
+		// mx1 as SMTP's 451 for a recipient whose folder the other server was making)
+		if( !exists() || isDirectory()) {
 			if( arg0.isEmpty() || arg0.equals(".") || arg0.equals("..") || arg0.indexOf('/') >= 0 || arg0.indexOf('\\') >= 0 ) {
 				// a path, not a name: "sub/file.txt" or "../x" used to become one element
 				return new JdbcFileSource(factory, getAbsolutePath()+"/"+arg0);

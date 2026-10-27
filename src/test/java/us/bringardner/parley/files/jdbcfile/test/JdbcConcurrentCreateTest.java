@@ -87,6 +87,52 @@ public class JdbcConcurrentCreateTest {
 	}
 
 	@Test
+	public void aChildOfAFolderBeingMadeByAnotherProcess() throws Exception {
+		JdbcFileSourceFactory one = JdbcTestServer.factory();
+		JdbcFileSourceFactory two = second(one);
+		try {
+			for (int round = 0; round < 30; round++) {
+				String path = "/children/" + round + "/b1.test";
+				List<Throwable> errors = Collections.synchronizedList(new ArrayList<>());
+				ExecutorService pool = Executors.newFixedThreadPool(4);
+				CountDownLatch start = new CountDownLatch(1);
+				java.util.concurrent.atomic.AtomicBoolean made = new java.util.concurrent.atomic.AtomicBoolean();
+				pool.submit(() -> {
+					try {
+						start.await();
+						two.createFileSource(path).mkdirs();
+						made.set(true);
+					} catch (Throwable e) {
+						errors.add(e);
+					}
+					return null;
+				});
+				for (int t = 0; t < 3; t++) {
+					pool.submit(() -> {
+						try {
+							start.await();
+							// as SMTP's recipient check: a new handle each time, then its child
+							while (!made.get()) {
+								one.createFileSource(path).getChild("t");
+							}
+							one.createFileSource(path).getChild("t");
+						} catch (Throwable e) {
+							errors.add(e);
+						}
+						return null;
+					});
+				}
+				start.countDown();
+				pool.shutdown();
+				assertTrue(pool.awaitTermination(1, TimeUnit.MINUTES));
+				assertEquals(Collections.emptyList(), errors, "round " + round);
+			}
+		} finally {
+			two.disConnect();
+		}
+	}
+
+	@Test
 	public void manyProcessesMakeOneFolderAtOnce() throws Exception {
 		JdbcFileSourceFactory one = JdbcTestServer.factory();
 		JdbcFileSourceFactory two = second(one);
