@@ -505,6 +505,9 @@ final class JdbcLocks {
 					ps.executeUpdate();
 				}
 				h.con.commit();
+				// its transaction is over and it holds nothing: the next lock may use it
+				factory.reuseLockConnection(h.con);
+				return;
 			} catch (SQLException e) {
 				// the row stays as a stale claim (its row lock ends with the connection), removed by the next locker
 				LOG.log(Level.FINE, "Removing lock row " + h.id + " of file " + fileid, e);

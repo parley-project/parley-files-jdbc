@@ -626,12 +626,79 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 		if( p == null ) {
 			throw new SQLException("Not connected");
 		}
+		// one a released lock left (opening one is a handshake and several statements: a mail
+		// server takes a lock for every message it stores)
+		Connection c;
+		while( (c = idleLockConnections.pollFirst()) != null ) {
+			try {
+				if( c.isValid(2) ) {
+					return c;
+				}
+			} catch (SQLException e) {
+				// closed by the server (its wait_timeout): open another
+			}
+			closeQuietly(c);
+		}
 		return java.sql.DriverManager.getConnection(p.getUrl(), p.getUserid(), p.getPasswd());
+	}
+
+	/**
+	 * Changes to single rows, counted per row (a row's id picks one of these counters; two rows may
+	 * share one, which only makes a handle look its row up again sooner). A change to a file's data
+	 * or attributes, or an entry added to or removed from a directory, marks only the rows involved,
+	 * so the handles of other files keep what they know: the global change count (noteChange) made
+	 * every handle forget everything at every write, and a mail server writes all the time.
+	 */
+	private final java.util.concurrent.atomic.AtomicLongArray rowChanges = new java.util.concurrent.atomic.AtomicLongArray(ROW_CHANGE_STRIPES);
+	static final int ROW_CHANGE_STRIPES = 4096;
+
+	void noteRowChange(long fileid) {
+		rowChanges.incrementAndGet(rowStripe(fileid));
+	}
+
+	long rowChangeCount(long fileid) {
+		return rowChanges.get(rowStripe(fileid));
+	}
+
+	private static int rowStripe(long fileid) {
+		return (int) Math.floorMod(fileid ^ (fileid >>> 32), (long) ROW_CHANGE_STRIPES);
+	}
+
+	/** At most this many lock connections are kept for reuse; more are closed. */
+	static final int IDLE_LOCK_CONNECTIONS = 16;
+	private final java.util.concurrent.ConcurrentLinkedDeque<Connection> idleLockConnections = new java.util.concurrent.ConcurrentLinkedDeque<>();
+
+	/** A lock connection whose lock was released (its transaction ended): kept for the next lock. */
+	void reuseLockConnection(Connection c) {
+		if( pool == null || idleLockConnections.size() >= IDLE_LOCK_CONNECTIONS ) {
+			closeQuietly(c);
+			return;
+		}
+		idleLockConnections.addFirst(c);
+		if( pool == null ) {
+			closeIdleLockConnections(); // disconnected meanwhile
+		}
+	}
+
+	private void closeIdleLockConnections() {
+		Connection c;
+		while( (c = idleLockConnections.pollFirst()) != null ) {
+			closeQuietly(c);
+		}
+	}
+
+	private static void closeQuietly(Connection c) {
+		try {
+			c.close();
+		} catch (SQLException e) {
+			// gone already
+		}
 	}
 
 	@Override
 	protected void disConnectImpl() {
 		lockDialect = null;
+		closeIdleLockConnections();
 		if( pool != null ) {
 			try {
 				pool.destroyAll();

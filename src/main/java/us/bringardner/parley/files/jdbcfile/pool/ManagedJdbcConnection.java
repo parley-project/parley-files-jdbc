@@ -100,6 +100,9 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 * @param obj java.lang.Object
 	 * @param newpool us.bringardner.parley.files.jdbcfile.pool.ObjectPool
 	 */
+	/** Whether the one who borrowed it changed these: then they are put back on release. */
+	private volatile boolean autoCommitSet, isolationSet, readOnlySet;
+
 	public ManagedJdbcConnection(Object obj) throws SQLException	{
 		super(obj);
 		con = (Connection)obj;
@@ -137,9 +140,12 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 		//  Reset these parameters to their original values
 		try { con.rollback(); } catch(Exception ex) {}
 		try { con.clearWarnings(); } catch(Exception ex) {}
-		try { con.setAutoCommit(autoCommit); } catch(Exception ex) {}
-		try { con.setTransactionIsolation(isolation); } catch(Exception ex) {}
-		try { con.setReadOnly(readOnly); } catch(Exception ex) {}
+		// (only what the borrower changed: each of these is a statement to the server, three for
+		// every use of a pooled connection, most of all the statements a file system sends)
+		if( autoCommitSet ) { try { con.setAutoCommit(autoCommit); } catch(Exception ex) {} }
+		if( isolationSet ) { try { con.setTransactionIsolation(isolation); } catch(Exception ex) {} }
+		if( readOnlySet ) { try { con.setReadOnly(readOnly); } catch(Exception ex) {} }
+		autoCommitSet = isolationSet = readOnlySet = false;
 		touch();
 		//  Don't close the connection but release it back to the pool
 		release();	
@@ -452,6 +458,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	public void setAutoCommit(boolean autoCommit) throws SQLException 
 	{
 		touch();
+		autoCommitSet = true;
 		con.setAutoCommit(autoCommit);
 	}
 	/**
@@ -481,6 +488,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	public void setReadOnly(boolean readOnly) throws SQLException 
 	{
 		touch();
+		readOnlySet = true;
 		con.setReadOnly(readOnly)	;
 	}
 	/**
@@ -501,6 +509,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	public void setTransactionIsolation(int level) throws SQLException 
 	{
 		touch();
+		isolationSet = true;
 		con.setTransactionIsolation(level);
 	}
 	/**

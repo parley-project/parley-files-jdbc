@@ -122,16 +122,18 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	@NotAField()
 	private  JdbcFileSourceFactory factory;
 	@NotAField()
-	private  Long fileid;
+	private volatile Long fileid;
 	@NotAField()
 	private  JdbcFileSource parent;
 	@NotAField()
-	private  NamedField kids;
+	private volatile NamedField kids;
 	@NotAField()
 	private String name;
 
 
-	Map<String,FieldValue> fieldCache = new HashMap<>();
+	// (one handle is used by several threads at once, e.g. a mail server's maildrop root: the caches
+	// may be read and dropped concurrently)
+	Map<String,FieldValue> fieldCache = new java.util.concurrent.ConcurrentHashMap<>();
 
 
 	private Object getFieldValue(String name) throws IOException {
@@ -375,6 +377,9 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			String sql = "delete from file_source.file where fileid = ?";
 			long id = fileid;
 			if( executeUpdate(sql, id)== 1) {
+				if( link || !FILE.equals(type) || moved ) {
+					changedStructure();
+				}
 				if( !moved ) {
 					try(Connection con = factory.getConnection();
 							PreparedStatement pstmt = con.prepareStatement("delete from file_source.file_data where fileid=?")) {
@@ -435,7 +440,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			if( System.currentTimeMillis() - fileidAt <= factory.getFieldTimeToLive() ) {
 				return true;
 			}
-			fileid = null;
+			// stale: look it up again, keeping the id meanwhile (another thread may be using it)
 			fieldCache.clear();
 		}
 
@@ -453,12 +458,15 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 
 		try(Connection con = factory.getConnection()) {
-			try (PreparedStatement pstmt = con.prepareStatement("select name,fileid from file_source.file where name = ? and parentid=?")){
+			// (the whole row: its attributes are cached with the id, instead of a query for each one)
+			try (PreparedStatement pstmt = con.prepareStatement("select * from file_source.file where name = ? and parentid=?")){
 				pstmt.setString(1, name);
 				pstmt.setLong(2, pid);
 				try(ResultSet rs = pstmt.executeQuery()) {
 					if( rs.next()) {
 						ret = setFields(rs);
+					} else {
+						fileid = null;   // gone (deleted or renamed through another handle)
 					}
 				}
 			}
@@ -475,6 +483,11 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			throw new SQLException("name does not match rs name="+name+" rs="+tmp);
 		}
 		ResultSetMetaData md = rs.getMetaData();
+		// a link's own row says only what it is: its attributes are those of what it leads to,
+		// looked up through rowId() when they are asked for
+		String type = rs.getString("file_type");
+		boolean link = isLinkType(type);
+		fieldCache.put("own_type", new NamedField("own_type", type));
 		for(int idx=1,sz=md.getColumnCount(); idx <= sz; idx++ ) {
 			String f = md.getColumnLabel(idx);
 			if( f==null ) {
@@ -490,15 +503,21 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 			Object val = rs.getObject(idx);
 			if( "fileid".equals(f) ) {
+				fileid = val == null ? null : ((Number) val).longValue();
 				fileidAt = System.currentTimeMillis();
+				if( fileid != null ) {
+					seenRowOf = fileid;
+					seenRow = factory.rowChangeCount(fileid);
+				}
+				continue;
 			}
-			try {
-				Field field = getClass().getDeclaredField(f);
-				field.setAccessible(true);
-				field.set(this, val);
-
-			} catch (NoSuchFieldException | SecurityException | IllegalArgumentException | IllegalAccessException e) {
-				throw new SQLException(e);
+			if( "parentid".equals(f) || LENGTH.equals(f) || CHUNK_COUNT.equals(f) ) {
+				// (length and chunk count are counted from the data, not read from this row)
+				continue;
+			}
+			// an attribute: cached as getFieldValue would cache it (for the same time to live)
+			if( !link ) {
+				fieldCache.put(f, new NamedField(f, val));
 			}
 
 		}
@@ -551,36 +570,77 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	 * expire (see the factory's field time to live).
 	 */
 	@NotAField()
-	private transient long seenChange = -1;
+	private transient volatile long seenChange = -1;
 	/** When fileid was found; it is trusted for the factory's field time to live. */
 	@NotAField()
-	private transient long fileidAt;
+	private transient volatile long fileidAt;
 
 	private void forgetIfChanged() {
 		long now = factory.getChangeCount();
 		long seen = seenChange;
+		boolean forget = false;
 		if( seen != now ) {
 			seenChange = now;
-			if( seen != -1 ) {
-				fileid = null;
-				fieldCache.clear();
-				kids = null;
-				resolvedHandle = null;
+			forget = seen != -1;
+		}
+		// a change to this row only (its data, its attributes, its entries)
+		Long id = fileid;
+		if( id != null ) {
+			long rowNow = factory.rowChangeCount(id);
+			if( seenRowOf != id ) {
+				// found since: what it knows is as new as the lookup
+				seenRowOf = id;
+				seenRow = rowNow;
+			} else if( seenRow != rowNow ) {
+				seenRow = rowNow;
+				forget = true;
 			}
 		}
+		if( forget ) {
+			// stale, not unknown: the id is looked up again, but kept until the answer comes,
+			// so another thread using this handle never sees it vanish
+			fileidAt = 0;
+			fieldCache.clear();
+			kids = null;
+			resolvedHandle = null;
+		}
 	}
+
+	/** The row whose change count {@link #seenRow} is, and that count. */
+	@NotAField()
+	private transient volatile long seenRowOf = -1;
+	@NotAField()
+	private transient volatile long seenRow;
 
 	/**
 	 * Called after this handle changed the database. Others forget what they knew; this one
 	 * keeps its own cache, which the change code has already brought up to date.
 	 */
 	void changed() {
+		Long id = fileid;
+		if( factory.linksPossible() ) {
+			// a link answers with another row's attributes: every handle looks again
+			changedStructure();
+			return;
+		}
+		if( id != null ) {
+			factory.noteRowChange(id);
+			seenRowOf = id;
+			seenRow = factory.rowChangeCount(id);
+		}
+	}
+
+	/**
+	 * Called after a change that moves what paths lead to (a directory deleted or renamed, a link
+	 * made): every handle forgets what it knew. This one keeps its own cache.
+	 */
+	void changedStructure() {
 		factory.noteChange();
 		seenChange = factory.getChangeCount();
 	}
 
 	@NotAField()
-	private transient JdbcFileSource resolvedHandle;
+	private transient volatile JdbcFileSource resolvedHandle;
 	@NotAField()
 	private transient long resolvedAt;
 	/** How long the answer of {@link #resolve()} is kept. */
@@ -681,10 +741,18 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	/** The id of the row that answers for this path. It is for a file that exists (or is about to). */
 	private long rowId() throws IOException {
 		JdbcFileSource r = resolve();
-		if( r.fileid == null && !r.rowExists() ) {
-			throw new FileNotFoundException(r.getAbsolutePath() + " (No such file or directory)");
+		// (read once: another thread may look the row up again meanwhile)
+		Long id = r.fileid;
+		if( id == null || System.currentTimeMillis() - r.fileidAt > factory.getFieldTimeToLive() ) {
+			if( !r.rowExists() ) {
+				throw new FileNotFoundException(r.getAbsolutePath() + " (No such file or directory)");
+			}
+			id = r.fileid;
+			if( id == null ) {
+				throw new FileNotFoundException(r.getAbsolutePath() + " (No such file or directory)");
+			}
 		}
-		return r.fileid;
+		return id;
 	}
 
 	/**
@@ -732,7 +800,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			throw new IOException(e);
 		}
 		fieldCache.clear();
-		changed();
+		changedStructure();
 		parent.dereferenceChilderen();
 	}
 
@@ -821,7 +889,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		} catch (SQLException e) {
 			throw new IOException(e);
 		}
-		changed();
+		changedStructure();
 		return true;
 	}
 
@@ -843,8 +911,11 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	@Override
 	public FileSource getChild(String arg0) throws IOException {
 		// a path that doesn't exist yet can still get children (then mkdirs), as in
-		// the other file systems; only an existing regular file can't
-		if( isDirectory() || !exists()) {
+		// the other file systems; only an existing regular file can't. One look decides: exists()
+		// first, then the type of the row it found (isDirectory() then exists() were two looks,
+		// so a folder another process made in between was "not a directory" yet "there": seen on
+		// mx1 as SMTP's 451 for a recipient whose folder the other server was making)
+		if( !exists() || isDirectory()) {
 			if( arg0.isEmpty() || arg0.equals(".") || arg0.equals("..") || arg0.indexOf('/') >= 0 || arg0.indexOf('\\') >= 0 ) {
 				// a path, not a name: "sub/file.txt" or "../x" used to become one element
 				return new JdbcFileSource(factory, getAbsolutePath()+"/"+arg0);
@@ -903,7 +974,8 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	@Override
 	public InputStream getInputStream(long startingPosition) throws IOException {
 		if( !isFile()) {
-			throw new IOException("Not a file");
+			// as java.io.FileInputStream: a caller tells "gone" (another process took it) by the type
+			throw new FileNotFoundException(getAbsolutePath() + (exists() ? " (Is a directory)" : " (No such file or directory)"));
 		}
 		long len = length();
 		if( startingPosition>=len) {
@@ -1157,8 +1229,10 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		if( !isDirectory()) {
 			return null;
 		}
-		if( kids == null || isDirectory() || kids.hasExprired()) {
-			String sql = "select name,fileid from file_source.file where parentid=?";
+		NamedField known = kids;
+		if( known == null || isDirectory() || known.hasExprired()) {
+			// (whole rows: what is asked about each entry next, its type, length, time, is already there)
+			String sql = "select * from file_source.file where parentid=? order by name";
 
 			long dirId = rowId();   // a linked directory lists what is in the one it links to
 			try {
@@ -1173,7 +1247,8 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 								kid.setFields(rs);
 								list.add(kid);
 							}
-							kids= new NamedField(JdbcFileSourceFactory.KIDS,list.toArray(new JdbcFileSource[list.size()]));
+							known = new NamedField(JdbcFileSourceFactory.KIDS,list.toArray(new JdbcFileSource[list.size()]));
+							kids = known;
 						}
 					}
 				}
@@ -1181,7 +1256,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 				throw new IOException(e);
 			}
 		}
-		return ((JdbcFileSource[])kids.value);
+		return ((JdbcFileSource[])known.value);
 	}
 
 	@Override
@@ -1278,10 +1353,19 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		if( rowExists()) {
 			return false;
 		}
-		return ensureDirectory();
+		if( parent != null && !parent.ensureDirectory()) {
+			return false;
+		}
+		// (false if another process made it meanwhile: it isn't this call's)
+		return mkdir();
 	}
 
-	/** True if there is a directory at this path afterwards: it was there, or it and its parents were made. */
+	/**
+	 * True if there is a directory at this path afterwards: it was there, it and its parents were
+	 * made, or another process made it at the same time (its insert won: its directory is as good
+	 * as ours, so the rest of the path is made below it). A parent another process was making used
+	 * to stop the whole mkdirs, so two mail servers making one user's folder at once had one fail.
+	 */
 	private boolean ensureDirectory() throws IOException {
 		if( rowExists()) {
 			return isDirectory();
@@ -1289,7 +1373,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		if( parent != null && !parent.ensureDirectory()) {
 			return false;
 		}
-		return mkdir();
+		return mkdir() || isDirectory();
 	}
 
 	@Override
@@ -1309,7 +1393,11 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 				if(file.parent.isDirectory()) {
 					String sql = "update file_source.file set parentid = ? , name = ? where fileid=?";
 					long destParent = file.parent.rowId();
+					boolean dir = isDirectory();
 					if((executeUpdate(sql, destParent,file.name,fileid)==1)) {
+						if( dir ) {
+							changedStructure();
+						}
 						touchParent();
 						file.touchParent();
 						fileid = null;
@@ -1698,65 +1786,107 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		fieldCache.put(name, new FieldValue(value));		
 	}
 
+	/**
+	 * Adds a chunk at the end. One transaction that first updates the file's own row, which locks it
+	 * in every database, so appenders take turns, also in other processes (the mail servers sharing a
+	 * store append to the same history files). The chunk number is then counted from what is stored.
+	 * It used to come from what this handle last knew: two appenders took the same number, and the
+	 * second deleted the first one's chunk to put its own in.
+	 */
 	public void appendData(int length,byte[] data) throws IOException {
-		long chunk = getChunkCount()+1;
 		long id = rowId();
+		for (int attempt = 1; ; attempt++) {
+			try {
+				long chunk = appendOnce(id, length, data);
+				setFieldCache(CHUNK_COUNT, (int) chunk);
+				removeCache(LENGTH);
+				changed();
+				return;
+			} catch (SQLException e) {
+				if( attempt >= APPEND_ATTEMPTS || !isRetryable(e) ) {
+					throw new IOException(e);
+				}
+				// a deadlock or serialization failure: the database rolled it back, so do it again
+				try {
+					Thread.sleep(attempt * 5L + (long) (Math.random() * 10));
+				} catch (InterruptedException ie) {
+					Thread.currentThread().interrupt();
+					throw new IOException(e);
+				}
+			}
+		}
+	}
+
+	private static final int APPEND_ATTEMPTS = 5;
+
+	/** A deadlock or serialization failure (SQLSTATE class 40): retried as the databases advise. */
+	private static boolean isRetryable(SQLException e) {
+		for (Throwable t = e; t != null; t = t.getCause()) {
+			if( t instanceof SQLException ) {
+				String state = ((SQLException) t).getSQLState();
+				if( state != null && state.startsWith("40") ) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	private long appendOnce(long id, int length, byte[] data) throws SQLException, IOException {
 		try(Connection con = factory.getConnection()) {
-			try(PreparedStatement pstmt = con.prepareStatement("insert into file_source.file_data "
-					+ "(chunk_number,fileid,length,data) "
-					+ "values(?,?,?,?)")) 
-			{
-				pstmt.setLong(1, chunk);
-				pstmt.setLong(2, id);
-				pstmt.setInt(3, length);
-				pstmt.setBytes(4, data);
-
-				try {					 
+			con.setAutoCommit(false);
+			try {
+				Timestamp time = new Timestamp(System.currentTimeMillis());
+				// first the file's row: the lock that makes appenders take turns
+				try(PreparedStatement pstmt = con.prepareStatement(
+						"update file_source.file set length=length+?, "+LAST_ACCESS_DATE+"=?, "+LAST_MODIFIED_DATE+"=? where fileid=?")) {
+					pstmt.setLong(1, length);
+					pstmt.setTimestamp(2, time);
+					pstmt.setTimestamp(3, time);
+					pstmt.setLong(4, id);
 					if(pstmt.executeUpdate()!=1) {
-						throw new IOException("Could not insert chunk="+chunk);
-					}	
-				} catch (SQLException e) {
-					//  if we have an abort we can end up with a dangling row in the data table
-					if( e.getMessage().toLowerCase().contains("duplicate")) {
-						try(PreparedStatement pstmt2 = con.prepareStatement(
-								"delete from file_source.file_data "
-										+ " where chunk_number=? and fileid=?")) {
-
-							pstmt2.setLong(1, chunk);
-							pstmt2.setLong(2, id);
-
-							if( pstmt2.executeUpdate()==1) {
-								if(pstmt.executeUpdate()!=1) {
-									throw new IOException("Could not insert chunk="+chunk);
-								}		
-							};					
+						throw new FileNotFoundException(getAbsolutePath() + " (No such file or directory)");
+					}
+				}
+				long chunk = 1;
+				try(PreparedStatement pstmt = con.prepareStatement(
+						"select max(chunk_number) from file_source.file_data where fileid = ?")) {
+					pstmt.setLong(1, id);
+					try(ResultSet rs = pstmt.executeQuery()) {
+						if( rs.next() ) {
+							chunk = rs.getLong(1) + 1;   // (null, no chunks yet: 0)
 						}
 					}
 				}
-
-			}
-			Timestamp time = new Timestamp(System.currentTimeMillis());
-			try(PreparedStatement pstmt = con.prepareStatement(
-					"update file_source.file set chunk_count=?, length=length+?, "+LAST_ACCESS_DATE+"=?, "+LAST_MODIFIED_DATE+"=? where fileid=?")) {
-
-
-				pstmt.setInt(1, (int)chunk);
-				pstmt.setLong(2, length);
-				pstmt.setTimestamp(3, time);
-				pstmt.setTimestamp(4, time);
-				pstmt.setLong(5, id);
-				if(pstmt.executeUpdate()!=1) {
-					throw new IOException("Counld not update chunk count");
+				try(PreparedStatement pstmt = con.prepareStatement("insert into file_source.file_data "
+						+ "(chunk_number,fileid,length,data) values(?,?,?,?)")) {
+					pstmt.setLong(1, chunk);
+					pstmt.setLong(2, id);
+					pstmt.setInt(3, length);
+					pstmt.setBytes(4, data);
+					if(pstmt.executeUpdate()!=1) {
+						throw new IOException("Could not insert chunk="+chunk);
+					}
 				}
+				try(PreparedStatement pstmt = con.prepareStatement(
+						"update file_source.file set chunk_count=? where fileid=?")) {
+					pstmt.setInt(1, (int) chunk);
+					pstmt.setLong(2, id);
+					pstmt.executeUpdate();
+				}
+				con.commit();
+				setFieldCache(LAST_ACCESS_DATE, time);
+				setFieldCache(LAST_MODIFIED_DATE, time);
+				return chunk;
+			} catch (SQLException | IOException | RuntimeException e) {
+				try {
+					con.rollback();
+				} catch (SQLException e2) {
+					// the connection is gone; what it did is undone with it
+				}
+				throw e;
 			}
-			removeCache(LENGTH,CHUNK_COUNT);
-			setFieldCache(LAST_ACCESS_DATE, time);
-			setFieldCache(LAST_MODIFIED_DATE, time);
-			changed();
-		} catch (SQLException e) {
-			throw new IOException(e);
 		}
-
 	}
 
 	public byte[] getChunk(long chunk) throws IOException {
