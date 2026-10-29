@@ -1223,7 +1223,9 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		if( startingPosition>=len) {
 			startingPosition = len;
 		}
-		setLastAccessTime(System.currentTimeMillis());
+		if( factory.updatesAccessTime() ) {
+			setLastAccessTime(System.currentTimeMillis());
+		}
 		return new JdbcFileInputStream(this,startingPosition);
 	}
 

@@ -150,6 +150,15 @@ creates is owned by that user, so the owner permissions apply to it. Its group i
 files); set it empty for no group. Other database users get the group or other
 permissions stored with each file.
 
+## Access times
+
+By default opening a file for reading sets its access time (`lastAccessTime()`), as a file system does. That is one
+statement and one commit for each file opened, about 1.9 ms on MySQL, for a time that nothing may read. Set the
+connection property `jdbcAccessTime` to `false` (an advanced setting in a connection dialog) for what a file system
+mounted `noatime` does: opening a file for reading no longer writes it. Writing a file still sets the access time,
+as does `setLastAccessTime()`, and the property is read when the factory connects. On the B1 mail server test it
+saves the 5 updates each message made (see the CHANGELOG for the numbers).
+
 ## Links
 
 Symbolic links and hard links work. A link is a row of its own in `file_source.file`, and where it leads is

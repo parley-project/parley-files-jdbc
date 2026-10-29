@@ -89,6 +89,12 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	 * widened and the lock tables (file_source.file_lock, file_lock_range) are created where locks are kept in the database.
 	 */
 	public static final String JDBC_UPGRADE_SCHEMA = "jdbcUpgradeSchema";
+	/**
+	 * "false" is like a file system mounted noatime: opening a file for reading does not write its access time
+	 * (each is a statement and a commit, for a time nothing may ever read). Writes still set it, and so does
+	 * setLastAccessTime. Anything else, and the default, writes it when a file is opened for reading.
+	 */
+	public static final String JDBC_ACCESS_TIME = "jdbcAccessTime";
 	/** Which connection pool: parley (the default), hikari or dbcp2. See ConnectionPools. */
 	public static final String JDBC_POOL = "jdbcPool";
 	/**
@@ -155,6 +161,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 		_connectProperties.setProperty(JDBC_PASSWORD, "");
 		_connectProperties.setProperty(JDBC_GROUP, DEFAULT_GROUP);
 		_connectProperties.setProperty(JDBC_UPGRADE_SCHEMA, "true");
+		_connectProperties.setProperty(JDBC_ACCESS_TIME, "true");
 		_connectProperties.setProperty(JDBC_POOL, ConnectionPools.PARLEY);
 		ObjectPool.setDefaultMax(100); 
 	}
@@ -656,6 +663,13 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 		return false;
 	}
 
+	/** Whether opening a file for reading writes its access time (see {@link #JDBC_ACCESS_TIME}); read at connect. */
+	private volatile boolean updateAccessTime = true;
+
+	boolean updatesAccessTime() {
+		return updateAccessTime;
+	}
+
 	/** The pool's thread starts at once; this only keeps a failure from waiting forever. */
 	private static final long POOL_START_WAIT_MS = 30_000;
 
@@ -707,6 +721,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 					loginPassword = password;
 					pool = tmp;
 					ret = true;
+					updateAccessTime = !"false".equalsIgnoreCase(prop.getProperty(JDBC_ACCESS_TIME, "true").trim());
 					boolean upgrade = !"false".equalsIgnoreCase(prop.getProperty(JDBC_UPGRADE_SCHEMA, "true").trim());
 					if( upgrade ) {
 						widenNameColumns(con);
@@ -909,6 +924,9 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 				ConnectionSetting.secret(JDBC_PASSWORD, "Password"),
 				ConnectionSetting.text(JDBC_GROUP, "Group").withDefault(DEFAULT_GROUP).asAdvanced(),
 				ConnectionSetting.bool(JDBC_UPGRADE_SCHEMA, "Upgrade the schema").withDefault("true").asAdvanced(),
+				ConnectionSetting.bool(JDBC_ACCESS_TIME, "Write access times on read").withDefault("true")
+					.withDescription("false is like noatime: opening a file for reading does not write its access time")
+					.asAdvanced(),
 				ConnectionSetting.choice(JDBC_POOL, "Connection pool", ConnectionPools.PARLEY, ConnectionPools.HIKARI, ConnectionPools.DBCP2)
 					.withDefault(ConnectionPools.PARLEY)
 					.withDescription("hikari and dbcp2 need HikariCP or Commons DBCP2 on the classpath")
@@ -953,8 +971,8 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 			String key = (String)name;
 			String value = prop.getProperty( key );
 			if( value == null ) {
-				// not given: the group and the upgrade switch keep their defaults, everything else is empty
-				value = JDBC_GROUP.equals(key) || JDBC_UPGRADE_SCHEMA.equals(key) || JDBC_POOL.equals(key) ? _connectProperties.getProperty(key) : "";
+				// not given: the group, the upgrade switch and the access time switch keep their defaults, everything else is empty
+				value = JDBC_GROUP.equals(key) || JDBC_UPGRADE_SCHEMA.equals(key) || JDBC_ACCESS_TIME.equals(key) || JDBC_POOL.equals(key) ? _connectProperties.getProperty(key) : "";
 			}
 			instanceProperies.setProperty(key, value);
 		}

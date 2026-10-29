@@ -19,6 +19,11 @@
 
 ### Added
 
+- **`jdbcAccessTime`**, a connection property: `false` is like a file system mounted `noatime`, so opening a file for
+  reading does not write its access time (one statement and one commit each). Writes and `setLastAccessTime()` still
+  set it. The default, `true`, changes nothing. See the README. B1 (500 messages of 5 KB into a MySQL 8.4 mail store):
+  17.4 messages per second without the setting and 17.6 with it left at `true`, 18.3 with `false`; 231 statements per
+  message, and 217 with `false` (the 5 access-time updates, and the lookups each one made).
 - **A choice of connection pool**: the connection property `jdbcPool` is `parley` (the library's own pool, the
   default), `hikari` (HikariCP) or `dbcp2` (Apache Commons DBCP2). HikariCP and DBCP2 are optional
   dependencies: add the one you choose to your project (asking for one that is missing fails with a message
