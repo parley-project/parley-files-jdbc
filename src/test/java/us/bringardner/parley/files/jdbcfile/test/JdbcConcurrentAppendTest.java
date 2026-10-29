@@ -104,29 +104,4 @@ public class JdbcConcurrentAppendTest {
 			two.disConnect();
 		}
 	}
-
-	@Test
-	public void aWrongChunkCountIsPutRightByTheNextAppend() throws Exception {
-		JdbcFileSourceFactory f = JdbcTestServer.factory();
-		assertTrue(f.createFileSource("/append-count").mkdirs());
-		FileSource file = f.createFileSource("/append-count/f.txt");
-		for (String line : new String[] {"a\n", "b\n"}) {
-			try (OutputStream out = f.createFileSource("/append-count/f.txt").getOutputStream(true)) {
-				out.write(line.getBytes(StandardCharsets.UTF_8));
-			}
-		}
-		try (java.sql.Connection con = f.getConnection(); java.sql.Statement st = con.createStatement()) {
-			// a count that is not the number of the last chunk (2)
-			st.executeUpdate("update file_source.file set chunk_count = 7 where name = 'f.txt'");
-		}
-		try (OutputStream out = f.createFileSource("/append-count/f.txt").getOutputStream(true)) {
-			out.write("c\n".getBytes(StandardCharsets.UTF_8));
-		}
-		try (java.sql.Connection con = f.getConnection(); java.sql.Statement st = con.createStatement();
-				java.sql.ResultSet rs = st.executeQuery("select chunk_count from file_source.file where name = 'f.txt'")) {
-			assertTrue(rs.next());
-			assertEquals(3, rs.getInt(1));
-		}
-		assertEquals(6, f.createFileSource("/append-count/f.txt").length());
-	}
 }

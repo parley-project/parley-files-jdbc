@@ -1893,10 +1893,9 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			con.setAutoCommit(false);
 			try {
 				Timestamp time = new Timestamp(System.currentTimeMillis());
-				// first the file's row: the lock that makes appenders take turns. It counts the chunk
-				// too; the next query checks that count against what is stored
+				// first the file's row: the lock that makes appenders take turns
 				try(PreparedStatement pstmt = con.prepareStatement(
-						"update file_source.file set length=length+?, chunk_count=chunk_count+1, "+LAST_ACCESS_DATE+"=?, "+LAST_MODIFIED_DATE+"=? where fileid=?")) {
+						"update file_source.file set length=length+?, "+LAST_ACCESS_DATE+"=?, "+LAST_MODIFIED_DATE+"=? where fileid=?")) {
 					pstmt.setLong(1, length);
 					pstmt.setTimestamp(2, time);
 					pstmt.setTimestamp(3, time);
@@ -1906,15 +1905,12 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 					}
 				}
 				long chunk = 1;
-				long counted = 0;
 				try(PreparedStatement pstmt = con.prepareStatement(
-						"select max(d.chunk_number), f.chunk_count from file_source.file f "
-						+ "left join file_source.file_data d on d.fileid = f.fileid where f.fileid = ? group by f.chunk_count")) {
+						"select max(chunk_number) from file_source.file_data where fileid = ?")) {
 					pstmt.setLong(1, id);
 					try(ResultSet rs = pstmt.executeQuery()) {
 						if( rs.next() ) {
 							chunk = rs.getLong(1) + 1;   // (null, no chunks yet: 0)
-							counted = rs.getLong(2);
 						}
 					}
 				}
@@ -1928,14 +1924,11 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 						throw new IOException("Could not insert chunk="+chunk);
 					}
 				}
-				if( counted != chunk ) {
-					// the row's count was not the number of the last chunk: put it right
-					try(PreparedStatement pstmt = con.prepareStatement(
-							"update file_source.file set chunk_count=? where fileid=?")) {
-						pstmt.setInt(1, (int) chunk);
-						pstmt.setLong(2, id);
-						pstmt.executeUpdate();
-					}
+				try(PreparedStatement pstmt = con.prepareStatement(
+						"update file_source.file set chunk_count=? where fileid=?")) {
+					pstmt.setInt(1, (int) chunk);
+					pstmt.setLong(2, id);
+					pstmt.executeUpdate();
 				}
 				con.commit();
 				setFieldCache(LAST_ACCESS_DATE, time);
