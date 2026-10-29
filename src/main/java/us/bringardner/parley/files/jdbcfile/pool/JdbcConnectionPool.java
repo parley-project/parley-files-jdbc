@@ -196,6 +196,8 @@ public static synchronized void removeConnectionPool(String url, String userid, 
 	JdbcConnectionPool p = pools.remove(key(url, userid, passwd));
 	if( p != null ) {
 		try {
+			//  stop() ends the pool's thread, which destroys everything on its way out
+			p.stop();
 			p.destroyAll();
 		} catch (RuntimeException e) {
 			// it's being thrown away anyway

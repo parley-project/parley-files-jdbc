@@ -68,17 +68,14 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 		touch();
 		markDirty();
 		Class<?> c = obj.getClass();
-		Class<?>[] i = c.getInterfaces();
-		if( i == null || i.length < 1) {
-			Class<?> cc = c.getSuperclass();
-			while( cc != null ) {
-				i = cc.getInterfaces();
-				if( !(i == null || i.length < 1)) {
-					break;
-				}
-			}
+		//  Every interface of the class and its superclasses, so the proxy can be cast to
+		//  Statement, PreparedStatement or CallableStatement whatever the driver declares directly.
+		java.util.Set<Class<?>> all = new java.util.LinkedHashSet<Class<?>>();
+		for( Class<?> cc = c; cc != null; cc = cc.getSuperclass() ) {
+			all.addAll(java.util.Arrays.asList(cc.getInterfaces()));
 		}
-		Object proxy = java.lang.reflect.Proxy.newProxyInstance(c.getClassLoader(), 
+		Class<?>[] i = all.toArray(new Class<?>[all.size()]);
+		Object proxy = java.lang.reflect.Proxy.newProxyInstance(c.getClassLoader(),
 				i, 
 				new InvocationHandler() {
 

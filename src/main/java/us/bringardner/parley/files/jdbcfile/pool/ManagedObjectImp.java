@@ -38,7 +38,7 @@ public class ManagedObjectImp implements IManagedObject
 	private int status;
 	private ObjectPool pool;
 	private long createTime;
-	private long lastAccess;
+	private volatile long lastAccess;  // written by the borrower, read by the pool's thread
 	private StackTraceElement [] source;
 	private boolean captureSource = false;
 
@@ -161,6 +161,9 @@ public class ManagedObjectImp implements IManagedObject
 		status = stat;
 		startTime = System.currentTimeMillis();
 		if( status == IN_USE){
+			//  The in-use idle time counts from the checkout: a connection that was never touched
+			//  (or last touched when it was released) must not look idle the moment it is borrowed.
+			lastAccess = startTime;
 			if( isCaptureSource()){
 				RuntimeException ex = new RuntimeException();
 				source = ex.getStackTrace();
