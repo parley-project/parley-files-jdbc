@@ -66,6 +66,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	
 	private Object getKeepalive(final Object obj) {
 		touch();
+		markDirty();
 		Class<?> c = obj.getClass();
 		Class<?>[] i = c.getInterfaces();
 		if( i == null || i.length < 1) {
@@ -103,11 +104,27 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	/** Whether the one who borrowed it changed these: then they are put back on release. */
 	private volatile boolean autoCommitSet, isolationSet, readOnlySet;
 
+	/** The auto-commit mode the borrower has the connection in now. */
+	private volatile boolean autoCommitNow;
+	/**
+	 * A transaction may be open: auto-commit is off and a statement was made since the last commit or
+	 * rollback. A release rolls back only then (a rollback is a statement to the server whenever
+	 * auto-commit is off, even after a commit).
+	 */
+	private volatile boolean dirty;
+
+	private void markDirty() {
+		if( !autoCommitNow ) {
+			dirty = true;
+		}
+	}
+
 	public ManagedJdbcConnection(Object obj) throws SQLException	{
 		super(obj);
 		con = (Connection)obj;
 		isolation = con.getTransactionIsolation();
 		autoCommit = con.getAutoCommit();
+		autoCommitNow = autoCommit;
 		readOnly = con.isReadOnly();
 	}
 	
@@ -138,11 +155,15 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	public void close() throws SQLException 
 	{
 		//  Reset these parameters to their original values
-		try { con.rollback(); } catch(Exception ex) {}
+		if( dirty ) {
+			try { con.rollback(); } catch(Exception ex) {}
+		}
+		dirty = false;
 		try { con.clearWarnings(); } catch(Exception ex) {}
 		// (only what the borrower changed: each of these is a statement to the server, three for
 		// every use of a pooled connection, most of all the statements a file system sends)
 		if( autoCommitSet ) { try { con.setAutoCommit(autoCommit); } catch(Exception ex) {} }
+		autoCommitNow = autoCommit;
 		if( isolationSet ) { try { con.setTransactionIsolation(isolation); } catch(Exception ex) {} }
 		if( readOnlySet ) { try { con.setReadOnly(readOnly); } catch(Exception ex) {} }
 		autoCommitSet = isolationSet = readOnlySet = false;
@@ -163,6 +184,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	{
 		touch();
 		con.commit();
+		dirty = false;
 	}
 	/**
 	 * Creates a <code>Statement</code> object for sending
@@ -237,6 +259,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	public DatabaseMetaData getMetaData() throws SQLException {
 		touch();
+		markDirty();
 		return con.getMetaData();
 	}
 	/**
@@ -431,6 +454,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	{
 		touch();
 		con.rollback();
+		dirty = false;
 	}
 	/**
 	 * Sets this connection's auto-commit mode.
@@ -460,6 +484,10 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 		touch();
 		autoCommitSet = true;
 		con.setAutoCommit(autoCommit);
+		autoCommitNow = autoCommit;
+		if( autoCommit ) {
+			dirty = false;   // (turning auto-commit on commits what was open)
+		}
 	}
 	/**
 	 * Sets a catalog name in order to select 	
@@ -548,6 +576,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	public Statement createStatement(int arg0, int arg1, int arg2) throws SQLException {
 
+		markDirty();
 		return con.createStatement(arg0, arg1, arg2);
 	}
 
@@ -556,6 +585,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	public PreparedStatement prepareStatement(String arg0, int arg1, int arg2, int arg3) throws SQLException {
 
+		markDirty();
 		return con.prepareStatement(arg0,arg1,arg2,arg3);
 	}
 	/* (non-Javadoc)
@@ -563,6 +593,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	public CallableStatement prepareCall(String arg0, int arg1, int arg2, int arg3) throws SQLException {
 
+		markDirty();
 		return con.prepareCall( arg0,  arg1,  arg2,  arg3);
 	}
 
@@ -571,6 +602,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	public PreparedStatement prepareStatement(String arg0, int arg1) throws SQLException {
 
+		markDirty();
 		return con.prepareStatement( arg0,  arg1);
 	}
 	/* (non-Javadoc)
@@ -578,6 +610,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	public PreparedStatement prepareStatement(String arg0, int[] arg1) throws SQLException {
 
+		markDirty();
 		return con.prepareStatement( arg0,  arg1);
 	}
 	/* (non-Javadoc)
@@ -585,6 +618,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	public PreparedStatement prepareStatement(String arg0, String[] arg1) throws SQLException {
 
+		markDirty();
 		return con.prepareStatement( arg0, arg1);
 	}
 
@@ -607,6 +641,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	public Savepoint setSavepoint() throws SQLException {
 
+		markDirty();
 		return con.setSavepoint();
 	}
 
@@ -615,6 +650,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	public Savepoint setSavepoint(String arg0) throws SQLException {
 
+		markDirty();
 		return con.setSavepoint(arg0);
 	}
 
