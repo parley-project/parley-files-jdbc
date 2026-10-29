@@ -28,6 +28,10 @@ CREATE TABLE file_source.file (
 	) 
 	;
 
+
+-- every check that links exist (file_type link or hard) reads the whole table without it
+CREATE INDEX file_type_idx ON file_source.file (file_type)
+	;
 CREATE TABLE file_source.file_data (
 	CHUNK_NUMBER BIGINT NOT NULL,
 	FILEID BIGINT NOT NULL  ,

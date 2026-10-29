@@ -102,7 +102,13 @@ final class JdbcTestServer implements TestServerController {
 		try(InputStream in = JdbcTestServer.class.getResourceAsStream("/Hsqldb.ddl")) {
 			String ddl = new String(in.readAllBytes());
 			try(Connection con = factory.getConnection(); Statement stmt = con.createStatement()) {
-				stmt.executeUpdate(ddl);
+				// one statement at a time, as a person runs the file: a script is compiled whole, and a
+				// CREATE INDEX could not find the table the same script makes
+				for(String sql : ddl.split(";")) {
+					if( !sql.replaceAll("(?m)^\\s*--.*$", "").trim().isEmpty() ) {
+						stmt.executeUpdate(sql);
+					}
+				}
 			}
 		}
 		FileSourceTestSupport.factory = factory;

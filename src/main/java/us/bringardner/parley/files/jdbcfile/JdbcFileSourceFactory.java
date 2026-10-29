@@ -599,6 +599,66 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 		return Arrays.asList(table+"DROP PRIMARY KEY", table+add);
 	}
 
+	/**
+	 * Makes an index on file_source.file's file_type when the table has none: the check whether any
+	 * link exists ({@link #linksPossible()}, every two seconds) filters on it, and without the index it
+	 * reads the whole table (0.56 s at a million files, against 0.02 ms with it). Runs on connect unless
+	 * jdbcUpgradeSchema is "false". Never fails the connection: problems (e.g. no rights to make an
+	 * index) are logged, and the README has the statement to run by hand.
+	 *
+	 * @return true if the index was made
+	 */
+	public boolean addFileTypeIndex(Connection con) {
+		try {
+			DatabaseMetaData md = con.getMetaData();
+			if( fileTypeIndexed(md) ) {
+				return false;
+			}
+			try(Statement st = con.createStatement()) {
+				st.executeUpdate(FILE_TYPE_INDEX_SQL);
+			}
+			if( !con.getAutoCommit()) {
+				con.commit();
+			}
+			logInfo("Made an index on file_source.file (file_type)");
+			return true;
+		} catch (SQLException | RuntimeException e) {
+			logWarn("Can't make an index on file_source.file (file_type) (see README, Upgrading an existing database): "+e);
+			return false;
+		}
+	}
+
+	/** The statement that makes the index (the same in every database this supports). */
+	public static final String FILE_TYPE_INDEX_SQL = "CREATE INDEX file_type_idx ON file_source.file (file_type)";
+
+	/** True if some index of file_source.file starts with file_type. */
+	private static boolean fileTypeIndexed(DatabaseMetaData md) throws SQLException {
+		// identifier case and "schema" differ, as for columnSize()
+		String[][] tries = {
+				{null, "FILE_SOURCE", "FILE"},
+				{null, "file_source", "file"},
+				{"file_source", null, "file"}};
+		for(String[] t : tries) {
+			boolean tableSeen = false;
+			try(ResultSet rs = md.getIndexInfo(t[0], t[1], t[2], false, false)) {
+				while( rs.next()) {
+					String column = rs.getString("COLUMN_NAME");
+					if( column == null ) {
+						continue;   // (a statistics row)
+					}
+					tableSeen = true;
+					if( column.equalsIgnoreCase("file_type") && rs.getShort("ORDINAL_POSITION") == 1 ) {
+						return true;
+					}
+				}
+			}
+			if( tableSeen ) {
+				return false;
+			}
+		}
+		return false;
+	}
+
 	/** The pool's thread starts at once; this only keeps a failure from waiting forever. */
 	private static final long POOL_START_WAIT_MS = 30_000;
 
@@ -654,6 +714,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 					if( upgrade ) {
 						widenNameColumns(con);
 						reorderDataKey(con);
+						addFileTypeIndex(con);
 					}
 					lockDialect = setUpLocks(con, upgrade);
 				}
@@ -941,7 +1002,8 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 
 	/** Set once a link is known to exist, so a database that has none costs nothing. */
 	private volatile boolean linksKnown;
-	private volatile long linksCheckedAt;
+	private final java.util.concurrent.atomic.AtomicLong linksCheckedAt = new java.util.concurrent.atomic.AtomicLong();
+	private final java.util.concurrent.atomic.AtomicInteger linkChecks = new java.util.concurrent.atomic.AtomicInteger();
 	/** How long "there are no links" is believed: another client may make one. */
 	private static final long LINK_CHECK_INTERVAL = 2000;
 
@@ -951,10 +1013,12 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 			return true;
 		}
 		long now = System.currentTimeMillis();
-		if( now - linksCheckedAt < LINK_CHECK_INTERVAL ) {
+		long last = linksCheckedAt.get();
+		// (one thread looks per interval: the others, arriving at the same moment, lose the swap)
+		if( now - last < LINK_CHECK_INTERVAL || !linksCheckedAt.compareAndSet(last, now) ) {
 			return false;
 		}
-		linksCheckedAt = now;
+		linkChecks.incrementAndGet();
 		try(Connection con = getConnection();
 				PreparedStatement pstmt = con.prepareStatement(
 						"select fileid from file_source.file where file_type = ? or file_type = ?")) {
@@ -970,6 +1034,11 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 			// can't tell: treat it as none until the next look
 		}
 		return linksKnown;
+	}
+
+	/** How many times this factory has asked the database whether any link exists (for tests). */
+	public int getLinkChecks() {
+		return linkChecks.get();
 	}
 
 	void linksMade() {

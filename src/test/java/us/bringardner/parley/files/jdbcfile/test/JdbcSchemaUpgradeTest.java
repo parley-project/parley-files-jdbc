@@ -174,4 +174,53 @@ public class JdbcSchemaUpgradeTest {
 				"ALTER TABLE file_source.file_data ADD PRIMARY KEY (fileid, chunk_number)"),
 				JdbcFileSourceFactory.reorderKeySql("HSQL Database Engine", null));
 	}
+
+	/** True if some index of file_source.file starts with file_type. */
+	private static boolean fileTypeIndexed() throws Exception {
+		try(Connection con = shared().getConnection();
+				ResultSet rs = con.getMetaData().getIndexInfo(null, "FILE_SOURCE", "FILE", false, false)) {
+			while( rs.next()) {
+				if( "FILE_TYPE".equalsIgnoreCase(rs.getString("COLUMN_NAME")) && rs.getShort("ORDINAL_POSITION") == 1 ) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	private static void dropFileTypeIndex() throws Exception {
+		try(Connection con = shared().getConnection(); Statement st = con.createStatement()) {
+			st.executeUpdate("DROP INDEX file_source.file_type_idx");
+		}
+		assertEquals(false, fileTypeIndexed());
+	}
+
+	@Test
+	public void aNewSchemaHasTheFileTypeIndex() throws Exception {
+		assertTrue(fileTypeIndexed());
+	}
+
+	@Test
+	public void aMissingFileTypeIndexIsMadeOnConnect() throws Exception {
+		dropFileTypeIndex();
+		connect(true);
+		assertTrue(fileTypeIndexed());
+	}
+
+	@Test
+	public void theFileTypeIndexUpgradeCanBeSwitchedOff() throws Exception {
+		dropFileTypeIndex();
+		connect(false);
+		assertEquals(false, fileTypeIndexed());
+		connect(true);
+		assertTrue(fileTypeIndexed());
+	}
+
+	@Test
+	public void anExistingFileTypeIndexIsLeftAlone() throws Exception {
+		try(Connection con = shared().getConnection()) {
+			assertEquals(false, shared().addFileTypeIndex(con));
+		}
+		assertTrue(fileTypeIndexed());
+	}
 }

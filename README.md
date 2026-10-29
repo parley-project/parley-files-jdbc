@@ -233,3 +233,13 @@ once while it runs. To do it yourself:
 | HSQLDB, SQL:2003 | `ALTER TABLE file_source.file_data DROP PRIMARY KEY;`<br>`ALTER TABLE file_source.file_data ADD PRIMARY KEY (fileid, chunk_number);` |
 | PostgreSQL | `ALTER TABLE file_source.file_data DROP CONSTRAINT "file_data_pkey", ADD PRIMARY KEY (fileid, chunk_number);` |
 | MySQL | `ALTER TABLE file_source.file_data DROP PRIMARY KEY, ADD PRIMARY KEY (fileid, chunk_number);` |
+
+`file_source.file` has an index on `file_type`. The factory checks every two seconds whether the database
+holds any link (`file_type` `link` or `hard`), and without the index that check reads the whole table:
+0.56 s at a million files, against 0.02 ms with it. The index is made when the factory connects (the same
+`jdbcUpgradeSchema` setting applies, and it is logged); new schemas made from the `.ddl` files have it. To make
+it yourself, on any of the databases:
+
+```sql
+CREATE INDEX file_type_idx ON file_source.file (file_type);
+```

@@ -27,6 +27,10 @@ CREATE TABLE file_source.file (
 	) 
 	;
 
+
+-- every check that links exist (file_type link or hard) reads the whole table without it
+CREATE INDEX file_type_idx ON file_source.file (file_type)
+	;
 -- File locks (FileSource.lock), used by PostgreSQL, MySQL 8 and MariaDB 10.3+, and created on
 -- connect if missing. file_lock: one row per locked file, row-locked briefly while a lock is taken.
 -- file_lock_range: one row per region held, kept row-locked by its holder until it is released.
