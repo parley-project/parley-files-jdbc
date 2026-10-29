@@ -418,7 +418,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 							}
 						}
 						if( parentId != null ) {
-							// as touchParent: a directory's modified time is when something was last taken out of it
+							// a directory's modified time is when something was last taken out of it (see executeUpdateTouching)
 							try(PreparedStatement pstmt = con.prepareStatement(
 									"update file_source.file set "+LAST_MODIFIED_DATE+" = ? where fileid = ?")) {
 								pstmt.setTimestamp(1, new Timestamp(System.currentTimeMillis()));
@@ -1354,11 +1354,75 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		return ret;
 	}
 
-	/** As a file system does: a directory's modified time is when something was last added to it or taken out. */
-	private void touchParent() throws IOException {
-		if( parent != null && parent.rowExists() ) {
-			parent.executeUpdate("update file_source.file set "+LAST_MODIFIED_DATE+" = ? where fileid = ?",
-					new Timestamp(System.currentTimeMillis()), parent.fileid);
+	/**
+	 * Runs a change to this path's row and, in the same transaction, sets the modified time of the
+	 * folders it moved things in or out of: as a file system does, a directory's modified time is when
+	 * something was last added to it or taken out. One commit for the change and the times, not one each.
+	 * The folders are written in id order, so two changes touching the same folders take their locks in
+	 * the same order; a deadlock is retried.
+	 *
+	 * @param folders the folders to touch if the statement changed one row (null or without a row: skipped)
+	 * @return the number of rows the statement changed
+	 */
+	private int executeUpdateTouching(String sql, Object[] args, JdbcFileSource ... folders) throws IOException {
+		java.util.TreeMap<Long, JdbcFileSource> touch = new java.util.TreeMap<>();
+		for (JdbcFileSource f : folders) {
+			if( f != null && f.rowExists() ) {
+				touch.put(f.fileid, f);
+			}
+		}
+		for (int attempt = 1; ; attempt++) {
+			try(Connection con = factory.getConnection()) {
+				con.setAutoCommit(false);
+				try {
+					int ret;
+					try(PreparedStatement pstmt = con.prepareStatement(sql)) {
+						for (int idx = 0; idx < args.length; idx++) {
+							pstmt.setObject(idx+1, args[idx]);
+						}
+						ret = pstmt.executeUpdate();
+					}
+					if( ret == 1 && !touch.isEmpty() ) {
+						Timestamp time = new Timestamp(System.currentTimeMillis());
+						try(PreparedStatement pstmt = con.prepareStatement(
+								"update file_source.file set "+LAST_MODIFIED_DATE+" = ? where fileid = ?")) {
+							for (Long id : touch.keySet()) {
+								pstmt.setTimestamp(1, time);
+								pstmt.setLong(2, id);
+								pstmt.executeUpdate();
+							}
+						}
+					}
+					con.commit();
+					fieldCache.clear();
+					changed();
+					if( ret == 1 ) {
+						for (JdbcFileSource f : touch.values()) {
+							f.fieldCache.clear();
+							f.changed();
+						}
+					}
+					return ret;
+				} catch (SQLException | RuntimeException e) {
+					try {
+						con.rollback();
+					} catch (SQLException e2) {
+						// the connection is gone; what it did is undone with it
+					}
+					throw e;
+				}
+			} catch (SQLException e) {
+				if( attempt >= APPEND_ATTEMPTS || !isRetryable(e) ) {
+					throw new IOException(e);
+				}
+				// a deadlock or serialization failure: the database rolled it back, so do it again
+				try {
+					Thread.sleep(attempt * 5L + (long) (Math.random() * 10));
+				} catch (InterruptedException ie) {
+					Thread.currentThread().interrupt();
+					throw new IOException(e);
+				}
+			}
 		}
 	}
 
@@ -1373,7 +1437,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		forgetResolution();
 		boolean made;
 		try {
-			made = executeUpdate(sql, name,pid,owner,file_type, DIRECTORY.equals(file_type)) == 1;
+			made = executeUpdateTouching(sql, new Object[] {name,pid,owner,file_type, DIRECTORY.equals(file_type)}, parent) == 1;
 		} catch (IOException e) {
 			if( isDuplicateKey(e) ) {
 				// another caller made it first: UNIQUE(parentid, name) let only one insert in, which is
@@ -1383,9 +1447,6 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 				return false;
 			}
 			throw e;
-		}
-		if( made ) {
-			touchParent();
 		}
 		return made;
 	}
@@ -1450,12 +1511,10 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 					String sql = "update file_source.file set parentid = ? , name = ? where fileid=?";
 					long destParent = file.parent.rowId();
 					boolean dir = isDirectory();
-					if((executeUpdate(sql, destParent,file.name,fileid)==1)) {
+					if((executeUpdateTouching(sql, new Object[] {destParent,file.name,fileid}, parent, file.parent)==1)) {
 						if( dir ) {
 							changedStructure();
 						}
-						touchParent();
-						file.touchParent();
 						fileid = null;
 						forgetResolution();
 						file.forgetResolution();
