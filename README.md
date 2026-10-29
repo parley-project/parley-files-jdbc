@@ -29,14 +29,102 @@ The file system takes its connections from a pool. The connection property `jdbc
 | `hikari` | [HikariCP](https://github.com/brettwooldridge/HikariCP) | `com.zaxxer:HikariCP` |
 | `dbcp2` | [Apache Commons DBCP2](https://commons.apache.org/proper/commons-dbcp/) | `org.apache.commons:commons-dbcp2` |
 
-HikariCP and DBCP2 are optional dependencies: add the one you choose to your project. Their sizes and time
-limits come from the `ObjectPool` defaults (maximum 100 connections, a 5 second wait, connections kept at most
-an hour and dropped after 5 idle minutes). All three check a connection that sat idle before handing it out
-again, so a restarted database does not leave bad connections in the pool.
+### Configuring a pool
 
-Code that uses a pool directly gets one from `ConnectionPools.getConnectionPool(type, url, user, password)`,
-which answers a `ConnectionPool`. The static methods on `JdbcConnectionPool` still work and are deprecated.
-`pool-benchmark/` compares the three.
+Set `jdbcPool` with the other connection properties (it is an advanced setting in a connection dialog):
+
+```java
+JdbcFileSourceFactory factory = (JdbcFileSourceFactory) FileSourceFactory.getFileSourceFactory("Jdbc");
+Properties p = factory.getConnectProperties();
+p.setProperty("jdbcUrl", "jdbc:postgresql://db.example.com/files");
+p.setProperty("jdbcUser", "files");
+p.setProperty("jdbcPassword", "...");
+p.setProperty("jdbcPool", "hikari");        // parley (the default), hikari or dbcp2
+factory.connect(p);
+```
+
+HikariCP and DBCP2 are optional dependencies, so add the one you choose to your project (these are the
+versions the tests use):
+
+```xml
+<dependency>
+    <groupId>com.zaxxer</groupId>
+    <artifactId>HikariCP</artifactId>
+    <version>5.1.0</version>
+</dependency>
+<!-- or -->
+<dependency>
+    <groupId>org.apache.commons</groupId>
+    <artifactId>commons-dbcp2</artifactId>
+    <version>2.12.0</version>
+</dependency>
+```
+
+Asking for a pool whose library is missing fails with a message that names the library.
+
+Sizes and time limits are the same for all three pools and come from the `ObjectPool` defaults, read when the
+pool is first made. Set them before `connect()` and after the factory class is loaded (its static initializer
+sets the maximum to 100):
+
+| `ObjectPool` default | Value | Used for |
+|---|---|---|
+| `setDefaultMax` | 100 | most connections open at once |
+| `setDefaultMin` | 1 | connections kept when idle |
+| `setDefaultTimeToWait` | 5 s | how long a caller waits for a connection when all are in use |
+| `setDefaultMaxTTL` | 1 hour | longest a connection lives |
+| `setDefaultExpire` | 5 min | idle time after which a spare connection is closed |
+
+A pool is shared by everyone who asks for the same kind, URL and login. Code that uses a pool directly gets
+one from `ConnectionPools.getConnectionPool(type, url, user, password)`, which answers a `ConnectionPool`
+(`getConnection`, `destroyAll`, `close`). The static methods on `JdbcConnectionPool` still work and are
+deprecated.
+
+### How the parley pool compares
+
+All three pools check a connection that sat idle before handing it out again, and replace one that has gone
+bad. After the database server is stopped for a second and started again, a warm pool of 5 made one request
+every 50 ms for 15 seconds: none of the three failed a request. (The library's own pool used to hand out the
+dead connections for as long as they lived.) The library's own pool also gives up on a connect that takes
+longer than 30 seconds, so one hung connect does not hold a caller and its slot for good; For HikariCP and DBCP2
+see their own documentation on connect timeouts.
+
+**The file system.** `JdbcFileSystemPerfTest` creates, stats, reads, lists, appends to and deletes small files
+through the factory, from 1 and from 8 threads, against an in-memory HSQLDB. Operations per second over the
+whole workload (higher is better; HikariCP and DBCP2 ran twice, in either order):
+
+| Threads | parley | HikariCP | DBCP2 |
+|---|---|---|---|
+| 1 | 764 | 670, 767 | 357, 362 |
+| 8 | 1932 | 1905, 1967 | 1144, 1178 |
+
+On this workload the library's own pool is as fast as HikariCP, and both are about 1.7 to 2.1 times faster
+than DBCP2.
+
+**The pool alone.** `pool-benchmark/` (JMH, an in-memory H2) measures only the pool: millions of operations per
+second, pool of 50 connections (higher is better):
+
+| | parley | HikariCP | DBCP2 |
+|---|---|---|---|
+| borrow and return, 1 thread | 6.1 | 7.9 | 1.9 |
+| borrow and return, 8 threads | 2.8 | 50.2 | 1.8 |
+| borrow, `SELECT 1`, return, 1 thread | 1.07 | 1.47 | 0.40 |
+| borrow, `SELECT 1`, return, 8 threads | 2.28 | 4.44 | 0.67 |
+| same, 99th percentile latency, 8 threads | 30 µs | 4 µs | 55 µs |
+
+With one thread the library's own pool is about three quarters of HikariCP's speed. It does not scale with
+threads: every borrow and return takes one lock, so with 8 or more threads and nothing else to do it is far
+behind HikariCP, and its 99th percentile latency under contention is several times worse. Once each borrow
+has a query to run (the last rows) the gap is about a factor of two, and in the file system, where every
+operation does real database work, it is not measurable. DBCP2 was the slowest throughout.
+
+These are single runs on one machine against in-memory databases. A database reached over a network makes
+every operation slower, so the pool matters less. To measure your own setup, run the file system test with
+`mvn test -Dtest=JdbcFileSystemPerfTest -Dparley.perf=true -Dparley.perf.pool=hikari` (or `dbcp2`, `parley`),
+and see `pool-benchmark/README.md` for the pool benchmark.
+
+**Which to use.** The library's own pool needs no dependency and does what the file system needs. Choose
+HikariCP if many threads borrow connections at once for very short work, or if you already run it and want one
+pool to configure. DBCP2 works but was the slowest here.
 
 ## Users and permissions
 

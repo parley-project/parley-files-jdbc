@@ -8,6 +8,71 @@
   `jdbcUser` and `name` (saved connections need the new names); `parley.jdbc.bufferSize` is
   `parley.files.jdbc.bufferSize`, and `JdbcFile.dbid` is `parley.files.jdbc.dbid`.
 
+### Changed (needs a code change)
+
+- **A connection from `JdbcConnectionPool.getConnection()` is a handle of its own for each checkout** (a package
+  private `PooledConnection`), no longer the pooled `ManagedJdbcConnection`. Code that cast the connection to
+  `ManagedJdbcConnection` must stop; nothing else in the library did. After `close()` the handle is dead:
+  `isClosed()` is `true`, every other call throws `SQLException`, and a second `close()` does nothing. Before, a
+  connection kept past `close()` kept working, and a late `close()` could free a connection that another caller
+  had borrowed since.
+
+### Added
+
+- **A choice of connection pool**: the connection property `jdbcPool` is `parley` (the library's own pool, the
+  default), `hikari` (HikariCP) or `dbcp2` (Apache Commons DBCP2). HikariCP and DBCP2 are optional
+  dependencies: add the one you choose to your project (asking for one that is missing fails with a message
+  that names the library). All three are sized by the `ObjectPool` defaults. See the README.
+- `ConnectionPool`, the interface the file system uses (`getConnection`, `isRunning`, `awaitStart`,
+  `destroyAll`, `close`), implemented by `JdbcConnectionPool`, `HikariConnectionPool` and
+  `Dbcp2ConnectionPool`; and `ConnectionPools.getConnectionPool(type, url, user, password)` and
+  `removeConnectionPool(...)`, which share one pool for each kind, URL and login.
+- `ObjectPool.setValidateAfter` (default 500 ms; -1 never) and `setCreateTimeout` (default 30 s; 0 no limit),
+  with `setDefaultValidateAfter` and `setDefaultCreateTimeout`; and `ObjectPool.validateObject(Object)`, which
+  `JdbcConnectionPool` implements with `Connection.isValid`.
+- `pool-benchmark/`, a JMH benchmark and a database-restart check that compare the library's pool with
+  HikariCP and DBCP2, and `JdbcFileSystemPerfTest`, a file system workload over a chosen pool
+  (`-Dparley.perf=true -Dparley.perf.pool=...`; skipped otherwise).
+
+### Changed (no code change needed)
+
+- **A connection that sat idle is checked before it is handed out again** (500 ms or more; `isValid`), and one
+  that fails is closed and replaced. After a database restart or a firewall cutting idle connections the pool
+  recovers at once; it used to hand out the dead connections until they reached their longest life.
+- A connection whose release-time reset fails (a rollback, or restoring auto-commit, isolation, read-only,
+  catalog or schema) is closed instead of returned to the pool. The catalog and the schema are now put back too.
+- **Opening a connection is limited** to 30 seconds (`setCreateTimeout`). One that finishes after the limit is
+  closed, and the caller and the slot it held are free; before, a hung connect held both for good.
+- Connections are closed with no lock held (`destroyAll`, the pool's thread, cleanup in `getObject`), so a
+  `close()` that hangs on a dead socket no longer stalls every borrower and every release. The static pool
+  registry is a `ConcurrentHashMap` with no class lock: threads that ask for the same pool at once get one pool and
+  one thread, and `removeConnectionPool` no longer holds a lock while it closes connections.
+- A statement made before a `commit()` and run after it marks a transaction open, so the release rolls it back.
+- `Statement.getConnection()` and `DatabaseMetaData.getConnection()` answer with the borrower's handle, not the
+  driver's connection, which a caller could close behind the pool's back. Statements kept past `close()` answer
+  with their own, dead, handle. The overloads that returned unwrapped driver statements (`createStatement` with
+  three arguments, four forms of `prepareStatement`, `prepareCall` with four) go through the same wrapper.
+- The pool logs through `System.Logger` instead of `System.out` and `System.err`. `getConnection()` failures keep
+  their cause (`SQLException.getCause()`).
+- `JdbcConnectionPool.setPools` wraps a map that is not concurrent.
+
+### Fixed
+
+- A connection that was borrowed but not yet used could be closed by the pool's thread at its next pass as
+  "in use and idle too long" (its last-access time was zero, or the time of its previous release). The idle time
+  now counts from the checkout.
+- The proxy around a driver statement looped forever when the driver's statement class had no direct interfaces,
+  and could fail with a `ClassCastException` when it declared only a vendor interface. It now implements every
+  interface of the class and its superclasses.
+- `removeConnectionPool` closed the connections but left the pool's thread running; the thread now ends.
+- A connection opened but not wrapped (its first statements failed) was never closed.
+- The pool-exhausted message read "Pool size(40 is > max(40)".
+
+### Deprecated
+
+- The static `JdbcConnectionPool.getConnectionPool(...)` and `removeConnectionPool(...)` methods: use
+  `ConnectionPools`, which also chooses the kind of pool. They still work.
+
 ## parley-files-jdbc 1.1.0 (unreleased)
 
 Needs parley-files 1.1.0.
