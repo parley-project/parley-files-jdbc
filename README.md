@@ -19,6 +19,25 @@ implementing internet protocols. Put it on the class path and `FileSourceFactory
 > The `jdbc*` connection properties and the database schema are unchanged.
  
 
+## Connection pool
+
+The file system takes its connections from a pool. The connection property `jdbcPool` chooses which:
+
+| `jdbcPool` | Pool | Needs on the classpath |
+|---|---|---|
+| `parley` (default) | this library's own | nothing |
+| `hikari` | [HikariCP](https://github.com/brettwooldridge/HikariCP) | `com.zaxxer:HikariCP` |
+| `dbcp2` | [Apache Commons DBCP2](https://commons.apache.org/proper/commons-dbcp/) | `org.apache.commons:commons-dbcp2` |
+
+HikariCP and DBCP2 are optional dependencies: add the one you choose to your project. Their sizes and time
+limits come from the `ObjectPool` defaults (maximum 100 connections, a 5 second wait, connections kept at most
+an hour and dropped after 5 idle minutes). All three check a connection that sat idle before handing it out
+again, so a restarted database does not leave bad connections in the pool.
+
+Code that uses a pool directly gets one from `ConnectionPools.getConnectionPool(type, url, user, password)`,
+which answers a `ConnectionPool`. The static methods on `JdbcConnectionPool` still work and are deprecated.
+`pool-benchmark/` compares the three.
+
 ## Users and permissions
 
 A JDBC file system's current user is the database user (`jdbcUser`); every file it

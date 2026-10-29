@@ -111,6 +111,28 @@
 
 
 
+		<!-- Pools to choose from with the connection property jdbcPool (see ConnectionPools). Neither is
+		     required: put the one you choose on the classpath. -->
+		<dependency>
+			<groupId>com.zaxxer</groupId>
+			<artifactId>HikariCP</artifactId>
+			<version>5.1.0</version>
+			<optional>true</optional>
+		</dependency>
+		<dependency>
+			<groupId>org.apache.commons</groupId>
+			<artifactId>commons-dbcp2</artifactId>
+			<version>2.12.0</version>
+			<optional>true</optional>
+		</dependency>
+		<!-- HikariCP logs through slf4j; the tests don't want its output -->
+		<dependency>
+			<groupId>org.slf4j</groupId>
+			<artifactId>slf4j-nop</artifactId>
+			<version>2.0.13</version>
+			<scope>test</scope>
+		</dependency>
+
 		<!-- Tests use JUnit 5; it used to arrive, wrongly, through bjl_file_system 0.1.1 (now parley-files) -->
 		<dependency>
 			<groupId>org.junit.jupiter</groupId>

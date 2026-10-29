@@ -39,7 +39,7 @@ import java.util.concurrent.ConcurrentMap;
  * Creation date: (7/3/02 3:31:35 PM)
  * @author: Tony Bringardner
  */
-public class JdbcConnectionPool extends ObjectPool 
+public class JdbcConnectionPool extends ObjectPool implements ConnectionPool
 {
 	//  Looked up for every connection a caller asks for by url, so no lock on the class: closing a
 	//  pool (it closes connections, which can hang) must not hold up everyone else's lookup.
@@ -160,6 +160,7 @@ static public Connection getConnection(String driver, String url, String userid,
 	
 }
 
+@Deprecated
 public static JdbcConnectionPool getConnectionPool(String url, String userid, String passwd)
 	throws SQLException
 {
@@ -193,7 +194,7 @@ public java.lang.String getPasswd() {
  * Pools are shared by URL, user and password, so a different password never reuses another
  * login. The password is kept in the key only as a SHA-256 digest.
  */
-private static String key(String url, String userid, String passwd) {
+static String key(String url, String userid, String passwd) {
 	String digest = "";
 	if( passwd != null ) {
 		try {
@@ -212,6 +213,7 @@ private static String key(String url, String userid, String passwd) {
  * Stops and forgets the pool for url, userid and passwd, so the next getConnectionPool makes
  * a new one. A pool whose login failed must not be reused.
  */
+@Deprecated
 public static void removeConnectionPool(String url, String userid, String passwd) {
 	JdbcConnectionPool p = pools.remove(key(url, userid, passwd));
 	if( p != null ) {
@@ -223,6 +225,15 @@ public static void removeConnectionPool(String url, String userid, String passwd
 			// it's being thrown away anyway
 		}
 	}
+}
+
+/**
+ * Stops the pool's thread and closes its connections. A pool made by getConnectionPool is also
+ * kept there; remove it with removeConnectionPool (or ConnectionPools.removeConnectionPool).
+ */
+public void close() {
+	stop();
+	destroyAll();
 }
 
 public static Map<String, JdbcConnectionPool> getPools() {
@@ -255,6 +266,7 @@ public static void setPools(Map<String, JdbcConnectionPool> newPools) {
 }
 
 
+@Deprecated
 public static JdbcConnectionPool getConnectionPool(String driver,String url, String userid, String passwd)
 	throws SQLException,ClassNotFoundException
 {
@@ -264,6 +276,7 @@ public static JdbcConnectionPool getConnectionPool(String driver,String url, Str
 	
 }
 
+@Deprecated
 public static JdbcConnectionPool getConnectionPool(String driver,String url, String userid, String passwd, boolean create)
 	throws SQLException,ClassNotFoundException
 {
@@ -275,6 +288,7 @@ public static JdbcConnectionPool getConnectionPool(String driver,String url, Str
 	
 }
 
+@Deprecated
 public static JdbcConnectionPool getConnectionPool(String url, String userid, String passwd, boolean create)
 	throws SQLException
 {

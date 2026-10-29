@@ -39,7 +39,8 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
 
-import us.bringardner.parley.files.jdbcfile.pool.JdbcConnectionPool;
+import us.bringardner.parley.files.jdbcfile.pool.ConnectionPool;
+import us.bringardner.parley.files.jdbcfile.pool.ConnectionPools;
 import us.bringardner.parley.files.jdbcfile.pool.ObjectPool;
 import us.bringardner.parley.files.ConnectionSetting;
 import us.bringardner.parley.files.FileSource;
@@ -88,6 +89,8 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	 * widened and the lock tables (file_source.file_lock, file_lock_range) are created where locks are kept in the database.
 	 */
 	public static final String JDBC_UPGRADE_SCHEMA = "jdbcUpgradeSchema";
+	/** Which connection pool: parley (the default), hikari or dbcp2. See ConnectionPools. */
+	public static final String JDBC_POOL = "jdbcPool";
 	/**
 	 * Bytes in one chunk: what a write buffers before it is stored as one row of
 	 * file_data, and what random access reads and writes at a time. See
@@ -152,12 +155,15 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 		_connectProperties.setProperty(JDBC_PASSWORD, "");
 		_connectProperties.setProperty(JDBC_GROUP, DEFAULT_GROUP);
 		_connectProperties.setProperty(JDBC_UPGRADE_SCHEMA, "true");
+		_connectProperties.setProperty(JDBC_POOL, ConnectionPools.PARLEY);
 		ObjectPool.setDefaultMax(100); 
 	}
 
 	public boolean versionSupported = false;
 
-	private JdbcConnectionPool pool;
+	private ConnectionPool pool;
+	/** How this factory logged in, for the connections of its own that locks open (the pool may be any kind). */
+	private volatile String loginUrl, loginUser, loginPassword;
 	/** How this database keeps file locks; null if it can't (the locks then reach only this JVM). */
 	private volatile JdbcLocks.Dialect lockDialect;
 	private JdbcFileSource curentDir;
@@ -518,7 +524,8 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 		}
 
 		Properties prop = getConnectProperties();
-		JdbcConnectionPool tmp;
+		ConnectionPool tmp;
+		String poolType = prop.getProperty(JDBC_POOL, ConnectionPools.PARLEY);
 		// the setting may be a reference (@keychain:...): resolved only to log in. The pool
 		// keeps the password to open further connections, as a JDBC driver needs.
 		String setting = prop.getProperty(JDBC_PASSWORD);
@@ -529,7 +536,8 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 			Arrays.fill(pw, '\0');
 		}
 		try {
-			tmp = JdbcConnectionPool.getConnectionPool(
+			tmp = ConnectionPools.getConnectionPool(
+					poolType,
 					prop.getProperty(JDBC_URL),
 					prop.getProperty(JDBC_USERID),
 					password
@@ -551,6 +559,9 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 			
 			if(tmp !=null && tmp.isRunning() ) {
 				try(Connection con = tmp.getConnection()) {
+					loginUrl = prop.getProperty(JDBC_URL);
+					loginUser = prop.getProperty(JDBC_USERID);
+					loginPassword = password;
 					pool = tmp;
 					ret = true;
 					boolean upgrade = !"false".equalsIgnoreCase(prop.getProperty(JDBC_UPGRADE_SCHEMA, "true").trim());
@@ -566,7 +577,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 
 		if( !ret ) {
 			// a pool that couldn't log in is useless: drop it rather than keep a dead thread
-			JdbcConnectionPool.removeConnectionPool(prop.getProperty(JDBC_URL), prop.getProperty(JDBC_USERID), password);
+			ConnectionPools.removeConnectionPool(poolType, prop.getProperty(JDBC_URL), prop.getProperty(JDBC_USERID), password);
 		}
 		return ret;
 	}
@@ -622,7 +633,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	 * idle for long, and a lock's connection is idle for as long as the lock is held.
 	 */
 	Connection openLockConnection() throws SQLException {
-		JdbcConnectionPool p = pool;
+		ConnectionPool p = pool;
 		if( p == null ) {
 			throw new SQLException("Not connected");
 		}
@@ -639,7 +650,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 			}
 			closeQuietly(c);
 		}
-		return java.sql.DriverManager.getConnection(p.getUrl(), p.getUserid(), p.getPasswd());
+		return java.sql.DriverManager.getConnection(loginUrl, loginUser, loginPassword);
 	}
 
 	/**
@@ -706,6 +717,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 			}
 			pool = null;
 		}
+		loginPassword = null;
 	}
 
 	/**
@@ -751,7 +763,11 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 				ConnectionSetting.text(JDBC_USERID, "User"),
 				ConnectionSetting.secret(JDBC_PASSWORD, "Password"),
 				ConnectionSetting.text(JDBC_GROUP, "Group").withDefault(DEFAULT_GROUP).asAdvanced(),
-				ConnectionSetting.bool(JDBC_UPGRADE_SCHEMA, "Upgrade the schema").withDefault("true").asAdvanced());
+				ConnectionSetting.bool(JDBC_UPGRADE_SCHEMA, "Upgrade the schema").withDefault("true").asAdvanced(),
+				ConnectionSetting.choice(JDBC_POOL, "Connection pool", ConnectionPools.PARLEY, ConnectionPools.HIKARI, ConnectionPools.DBCP2)
+					.withDefault(ConnectionPools.PARLEY)
+					.withDescription("hikari and dbcp2 need HikariCP or Commons DBCP2 on the classpath")
+					.asAdvanced());
 	}
 
 
@@ -793,7 +809,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 			String value = prop.getProperty( key );
 			if( value == null ) {
 				// not given: the group and the upgrade switch keep their defaults, everything else is empty
-				value = JDBC_GROUP.equals(key) || JDBC_UPGRADE_SCHEMA.equals(key) ? _connectProperties.getProperty(key) : "";
+				value = JDBC_GROUP.equals(key) || JDBC_UPGRADE_SCHEMA.equals(key) || JDBC_POOL.equals(key) ? _connectProperties.getProperty(key) : "";
 			}
 			instanceProperies.setProperty(key, value);
 		}

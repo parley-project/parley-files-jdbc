@@ -78,6 +78,11 @@ final class JdbcTestServer implements TestServerController {
 	 * factory to it and creates the tables.
 	 */
 	static JdbcFileSourceFactory setUp(int port) throws Exception {
+		return setUp(port, null);
+	}
+
+	/** As setUp(port), with the connection pool of the given kind (see ConnectionPools); null is the default. */
+	static JdbcFileSourceFactory setUp(int port, String pool) throws Exception {
 		running = new JdbcTestServer(availablePort(port));
 		FileSourceTestSupport.startServer(running, TIMEOUT);
 		Class.forName(DRIVER);
@@ -89,6 +94,9 @@ final class JdbcTestServer implements TestServerController {
 		p.setProperty(JdbcFileSourceFactory.JDBC_URL, running.url());
 		p.setProperty(JdbcFileSourceFactory.JDBC_USERID, USER);
 		p.setProperty(JdbcFileSourceFactory.JDBC_PASSWORD, PASSWORD);
+		if( pool != null ) {
+			p.setProperty(JdbcFileSourceFactory.JDBC_POOL, pool);
+		}
 		assertTrue(factory.connect(p));
 
 		try(InputStream in = JdbcTestServer.class.getResourceAsStream("/Hsqldb.ddl")) {
