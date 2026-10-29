@@ -27,6 +27,11 @@ package us.bringardner.parley.files.jdbcfile.pool;
 
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * A pool of reusable Objects.
@@ -62,6 +67,12 @@ abstract public class ObjectPool implements Runnable {
 	private static long defaultTimeToWait= 5000; //  Five seconds
 	private static long defaultTimeToSleep = 500;   //  .5 seconds
 
+	//  A free object that sat idle at least this long is checked (validateObject) before it is
+	//  handed out; -1 never checks
+	private static long defaultValidateAfter = 500;
+	//  The longest createObject may take; 0 is no limit
+	private static long defaultCreateTimeout = 30000;
+
 
 	
 	//  -----------   Instance variables  ------------	
@@ -78,6 +89,8 @@ abstract public class ObjectPool implements Runnable {
 	private boolean runAsDeamon = isDefRunAsDeamon();
 	private long timeToWait = getDefaultTimeToWait();
 	private long timeToSleep = getDefaultTimeToSleep();	
+	private volatile long validateAfter = defaultValidateAfter;
+	private volatile long createTimeout = defaultCreateTimeout;
 	private int autoDebug = getDefaultAutoDebug();
 	private boolean debug = isDefDebug();
 
@@ -253,6 +266,8 @@ abstract public class ObjectPool implements Runnable {
 
 		while( ret == null && System.currentTimeMillis()< maxTime ) {
 			boolean create = false;
+			boolean reused = false;
+			long idle = 0;
 			long generation;
 
 			synchronized (pool) {
@@ -274,6 +289,8 @@ abstract public class ObjectPool implements Runnable {
 				}
 
 				if( ret != null ) {
+					idle = System.currentTimeMillis()-ret.getStartTime();
+					reused = true;
 					ret.setInUse();
 				} else if( pool.size()+creating < max ) {
 					//  Reserve the slot, then create outside the lock: opening a connection
@@ -286,13 +303,26 @@ abstract public class ObjectPool implements Runnable {
 				}
 			}
 
+			if( reused && validateAfter >= 0 && idle >= validateAfter && !isValid(ret) ) {
+				//  It went bad while it was idle (the server restarted, a firewall cut it):
+				//  throw it away, which frees its slot, and look again. The check is outside
+				//  the lock: it is a round trip to the server.
+				discard(ret);
+				ret = null;
+				message = "The objects in the pool failed validation";
+				continue;
+			}
+
 			if( create ) {
 				IManagedObject made = null;
 				Throwable failure = null;
 				try {
-					made = createObject();
+					made = createWithTimeout();
 				} catch(Throwable ex) {
 					failure = ex;
+					if( ex instanceof InterruptedException ) {
+						Thread.currentThread().interrupt();
+					}
 				}
 
 				boolean destroyedMeanwhile = false;
@@ -346,6 +376,126 @@ abstract public class ObjectPool implements Runnable {
 
 		return ret;
 	}
+	/**
+	 * Is this object still good? Called for an object that was idle a while (see
+	 * {@link #getValidateAfter()}) before it is handed out again. Not called with the pool locked.
+	 * The default accepts everything.
+	 */
+	protected boolean validateObject(Object obj) throws Exception {
+		return true;
+	}
+
+	private boolean isValid(IManagedObject obj) {
+		try {
+			return validateObject(obj.getObject());
+		} catch(Throwable ex) {
+			return false;
+		}
+	}
+
+	/**
+	 * Take an object that is in use out of the pool and destroy it: it is broken, so it must not
+	 * be handed out again. Its slot is free at once.
+	 */
+	void discard(IManagedObject obj) {
+		synchronized (pool) {
+			pool.remove(obj);
+		}
+		obj.setDestroyed();
+		try {
+			destroyObject(obj.getObject());
+		} catch(Throwable ex) {}
+	}
+
+	/**
+	 * createObject() with the limit from {@link #getCreateTimeout()}. One that outlives the limit
+	 * is left to finish on its own thread and is destroyed when it does, so a late connection is
+	 * not leaked and the caller (and the slot it reserved) are not held for as long as the server
+	 * takes to answer.
+	 */
+	private IManagedObject createWithTimeout() throws Throwable {
+		long limit = createTimeout;
+		if( limit <= 0 ) {
+			return createObject();
+		}
+		CreateTask task = new CreateTask();
+		Thread t = new Thread(task, getName()+" connect");
+		t.setDaemon(true);
+		t.start();
+		try {
+			return task.get(limit, TimeUnit.MILLISECONDS);
+		} catch(ExecutionException ex) {
+			throw ex.getCause();
+		} catch(TimeoutException ex) {
+			task.abandon();
+			throw new ObjectCreateException("Timed out after "+limit+" ms creating an object");
+		} catch(InterruptedException ex) {
+			task.abandon();
+			throw ex;
+		}
+	}
+
+	private final class CreateTask extends FutureTask<IManagedObject> {
+		private final AtomicBoolean abandoned = new AtomicBoolean();
+		private final AtomicBoolean reaped = new AtomicBoolean();
+
+		CreateTask() {
+			super(ObjectPool.this::createObject);
+		}
+
+		@Override
+		protected void done() {
+			if( abandoned.get() ) {
+				reap();
+			}
+		}
+
+		void abandon() {
+			abandoned.set(true);
+			if( isDone() ) {
+				reap();
+			}
+		}
+
+		private void reap() {
+			if( reaped.compareAndSet(false, true) ) {
+				try {
+					IManagedObject o = get();
+					if( o != null ) {
+						destroyObject(o.getObject());
+					}
+				} catch(Throwable ex) {}
+			}
+		}
+	}
+
+	public long getValidateAfter() {
+		return validateAfter;
+	}
+	/** Check a free object before handing it out if it was idle at least this many ms; -1 never. */
+	public void setValidateAfter(long ms) {
+		validateAfter = ms;
+	}
+	public long getCreateTimeout() {
+		return createTimeout;
+	}
+	/** The longest, in ms, createObject() may take; 0 is no limit. */
+	public void setCreateTimeout(long ms) {
+		createTimeout = ms;
+	}
+	public static long getDefaultValidateAfter() {
+		return defaultValidateAfter;
+	}
+	public static void setDefaultValidateAfter(long ms) {
+		defaultValidateAfter = ms;
+	}
+	public static long getDefaultCreateTimeout() {
+		return defaultCreateTimeout;
+	}
+	public static void setDefaultCreateTimeout(long ms) {
+		defaultCreateTimeout = ms;
+	}
+
 	/**
 	 * 
 	 * Creation date: (10/4/2002 4:35:32 PM)

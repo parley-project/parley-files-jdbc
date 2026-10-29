@@ -35,7 +35,7 @@ public class ManagedObjectImp implements IManagedObject
 
 	private Object object;
 	private long startTime;
-	private int status;
+	private volatile int status;
 	private ObjectPool pool;
 	private long createTime;
 	private volatile long lastAccess;  // written by the borrower, read by the pool's thread
@@ -151,6 +151,18 @@ public class ManagedObjectImp implements IManagedObject
 	public void setInUse() 
 	{ 
 		setStatus(IN_USE);
+	}
+	/**
+	 * This object is broken: take it out of the pool and destroy it, rather than release it.
+	 */
+	public void discard()
+	{
+		ObjectPool p = pool;
+		if( p != null ) {
+			p.discard(this);
+		} else {
+			setDestroyed();
+		}
 	}
 	public void setPool(ObjectPool newPool)
 	{

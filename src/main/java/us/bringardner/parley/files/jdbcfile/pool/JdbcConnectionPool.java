@@ -75,10 +75,22 @@ public JdbcConnectionPool(String driver, String url, String userid, String passw
 public IManagedObject createObject() throws SQLException {
 	
 	Connection con = DriverManager.getConnection(url,userid,passwd);
-	ManagedJdbcConnection ret = new ManagedJdbcConnection(con);
+	try {
+		return new ManagedJdbcConnection(con);
+	} catch(SQLException | RuntimeException ex) {
+		//  it was opened, so it has to be closed, or it stays open until it is garbage collected
+		try { con.close(); } catch(Exception ignore) {}
+		throw ex;
+	}
 	
-	return ret;
-	
+}
+
+/**
+ * An idle connection is asked if it is still good before it is handed out again.
+ */
+protected boolean validateObject(Object obj) throws SQLException {
+	Connection conn = (Connection)obj;
+	return !conn.isClosed() && conn.isValid(2);
 }
 
 /**
@@ -106,10 +118,14 @@ public Connection getConnection()
 		
 		mcon = (ManagedJdbcConnection)obj;
 	} catch(Exception ex) {
-		throw new SQLException(ex.toString());
+		if( ex instanceof InterruptedException ) {
+			Thread.currentThread().interrupt();
+		}
+		throw new SQLException(ex.toString(), ex);
 	}
 
-	return mcon;
+	//  a handle of its own for each checkout (see PooledConnection)
+	return new PooledConnection(mcon);
 }
 
 static public Connection getConnection(String url, String userid, String passwd)

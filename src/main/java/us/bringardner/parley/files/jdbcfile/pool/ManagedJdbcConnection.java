@@ -110,6 +110,36 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	private volatile boolean dirty;
 
+	/** The catalog and schema it was opened with, put back on release if the borrower changed them. */
+	private String catalog, schema;
+	private volatile boolean catalogSet, schemaSet;
+
+	/** The handle that has it checked out now (see PooledConnection); null when nobody has. */
+	private volatile Object owner;
+
+	Object getOwner() {
+		return owner;
+	}
+
+	void setOwner(Object handle) {
+		owner = handle;
+	}
+
+	/**
+	 * The handle gives the connection back. Only the handle that has it can: a second close, or one
+	 * after the pool took it back, does nothing and so cannot free a connection that someone else
+	 * has by now.
+	 */
+	synchronized void returnFrom(Object handle) {
+		if( owner != handle ) {
+			return;
+		}
+		owner = null;
+		if( !isDestroyed() ) {
+			close();
+		}
+	}
+
 	private void markDirty() {
 		if( !autoCommitNow ) {
 			dirty = true;
@@ -123,6 +153,8 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 		autoCommit = con.getAutoCommit();
 		autoCommitNow = autoCommit;
 		readOnly = con.isReadOnly();
+		try { catalog = con.getCatalog(); } catch(Exception ex) {}
+		try { schema = con.getSchema(); } catch(Exception | AbstractMethodError ex) {}
 	}
 	
 	/**
@@ -149,24 +181,32 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 *
 	 * @exception SQLException if a database access error occurs
 	 */
-	public void close() throws SQLException 
+	public void close() 
 	{
-		//  Reset these parameters to their original values
+		//  Reset these parameters to their original values. A step that fails means the connection
+		//  is broken (or in a state we can't put right): it is thrown away, not given to the next user.
+		boolean broken = false;
 		if( dirty ) {
-			try { con.rollback(); } catch(Exception ex) {}
+			try { con.rollback(); } catch(Exception ex) { broken = true; }
 		}
 		dirty = false;
-		try { con.clearWarnings(); } catch(Exception ex) {}
+		try { con.clearWarnings(); } catch(Exception ex) { broken = true; }
 		// (only what the borrower changed: each of these is a statement to the server, three for
 		// every use of a pooled connection, most of all the statements a file system sends)
-		if( autoCommitSet ) { try { con.setAutoCommit(autoCommit); } catch(Exception ex) {} }
+		if( autoCommitSet ) { try { con.setAutoCommit(autoCommit); } catch(Exception ex) { broken = true; } }
 		autoCommitNow = autoCommit;
-		if( isolationSet ) { try { con.setTransactionIsolation(isolation); } catch(Exception ex) {} }
-		if( readOnlySet ) { try { con.setReadOnly(readOnly); } catch(Exception ex) {} }
-		autoCommitSet = isolationSet = readOnlySet = false;
+		if( isolationSet ) { try { con.setTransactionIsolation(isolation); } catch(Exception ex) { broken = true; } }
+		if( readOnlySet ) { try { con.setReadOnly(readOnly); } catch(Exception ex) { broken = true; } }
+		if( catalogSet ) { try { con.setCatalog(catalog); } catch(Exception ex) { broken = true; } }
+		if( schemaSet ) { try { con.setSchema(schema); } catch(Exception ex) { broken = true; } }
+		autoCommitSet = isolationSet = readOnlySet = catalogSet = schemaSet = false;
 		touch();
-		//  Don't close the connection but release it back to the pool
-		release();	
+		if( broken ) {
+			discard();
+		} else {
+			//  Don't close the connection but release it back to the pool
+			release();	
+		}
 	}
 	/**
 	 * Makes all changes made since the previous
@@ -497,6 +537,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	public void setCatalog(String catalog) throws SQLException 
 	{
 		touch();
+		catalogSet = true;
 		con.setCatalog(catalog)		;
 	}
 	/**
@@ -710,6 +751,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	}
 	
 	public void setSchema(String schema) throws SQLException {
+		schemaSet = true;
 		con.setSchema(schema);
 	}
 	
