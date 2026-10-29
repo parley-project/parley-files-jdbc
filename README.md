@@ -136,23 +136,31 @@ permissions stored with each file.
 
 ## Links
 
-Symbolic links and hard links work, and **the schema is unchanged**; two more values are used in
-`file_source.file.file_type` (the others are `file` and `dir`):
+Symbolic links and hard links work. A link is a row of its own in `file_source.file`, and where it leads is
+kept in `file_source.file_link`:
 
-| `file_type` | What the row is |
-|---|---|
-| `link` | A symbolic link. Its content (chunk 1 in `file_data`) is the path it points to, as on POSIX. The target needn't exist. |
-| `hard` | One more name for a file. Its content (chunk 1) is the `fileid` of the row that holds the data, so it follows a rename. When that row is deleted, the first hard link takes the data and attributes over. |
+| `file_type` | What the row is | Its entry in `file_link` |
+|---|---|---|
+| `link` | A symbolic link, as on POSIX. The target needn't exist. | `target_path`: the path it points to |
+| `hard` | One more name for a file, so it follows a rename of the file. | `target_id`: the `fileid` of the row that holds the data |
+
+A link row has no data of its own. `file.link_count` counts the hard links that point at a row, so deleting a file
+that none points at needs no extra lookup. When a file that hard links point at is deleted, the first of them
+(the lowest `link_id`) takes the data and attributes over and the others are repointed, in one transaction; the
+other names of a file are found through the index on `file_link (target_id)`.
 
 A path answers for what it leads to: type, length, content, listing, permissions and streams, also below a
 linked directory. A write through a link changes the file it leads to (the link stays a link).
 `getLinkedTo()` and `getCanonicalPath()` follow a symbolic link; `delete()` and `renameTo()` act on the
-link. A link made by another client is seen within a couple of seconds, and a
-database that has no links pays nothing extra. See
-[Links](https://github.com/parley-project/parley-files#links) in parley-files.
+link. A link made by another client is seen within a couple of seconds.
+
+Whether a path is a link comes with the row that is read for it, so a path that is not a link costs nothing
+extra, and a database with links is as fast as one without (B1: 17 messages per second with one link in the
+database, as without). See [Links](https://github.com/parley-project/parley-files#links) in parley-files.
 
 Code or tools that read the tables directly should know that a `link` or `hard` row is not a file with its
-own data.
+own data. Links made by an earlier version, which kept their target in the first chunk of the row's data, are
+not converted: delete them and make them again.
 
 ## Locking
 
@@ -234,19 +242,7 @@ once while it runs. To do it yourself:
 | PostgreSQL | `ALTER TABLE file_source.file_data DROP CONSTRAINT "file_data_pkey", ADD PRIMARY KEY (fileid, chunk_number);` |
 | MySQL | `ALTER TABLE file_source.file_data DROP PRIMARY KEY, ADD PRIMARY KEY (fileid, chunk_number);` |
 
-`file_source.file` has an index on `file_type`. The factory checks every two seconds whether the database
-holds any link (`file_type` `link` or `hard`), and without the index that check reads the whole table:
-0.56 s at a million files, against 0.02 ms with it. The index is made when the factory connects (the same
-`jdbcUpgradeSchema` setting applies, and it is logged); new schemas made from the `.ddl` files have it. To make
-it yourself, on any of the databases:
-
-```sql
-CREATE INDEX file_type_idx ON file_source.file (file_type);
-```
-
-Links are kept in a table of their own, `file_source.file_link`, and `file_source.file.link_count` counts the
-hard links that point at a row. A hard link has the id of the row that holds the data in `target_id`, and a
-symbolic link has the path it points to in `target_path` (the path need not exist). Both are made when the
+The link column and table (see Links) are made when the
 factory connects (the same `jdbcUpgradeSchema` setting applies, and it is logged), and new schemas made from the
 `.ddl` files have them. A database that already holds links made by an earlier version is not converted: delete
 those links and make them again. To make them yourself, on any of the databases:

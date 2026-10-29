@@ -1301,16 +1301,19 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	/** @param chunkSize the rows this stream stores, or 0 for the factory's chunk size */
 	private OutputStream openOutput(boolean append, int chunkSize) throws IOException {
-		JdbcFileSource r = resolve();
-		if( r != this ) {
-			return r.openOutput(append, chunkSize);   // a link that points at nothing creates its target
-		}
-		if(isDirectory()) {
-			throw new IOException("Cannot write to a directory");
+		// (the row is looked up once: a path with no row costs a lookup each time it is asked about)
+		boolean hasRow = rowExists();
+		if( hasRow ) {
+			JdbcFileSource r = resolve();
+			if( r != this ) {
+				return r.openOutput(append, chunkSize);   // a link that points at nothing creates its target
+			}
+			if(isDirectory()) {
+				throw new IOException("Cannot write to a directory");
+			}
 		}
 
-
-		if( !exists()) {
+		if( !hasRow || !exists()) {
 			// as a FileOutputStream: the directory above must be there, and be a directory
 			FileSource above = getParentFile();
 			if( above == null || !above.isDirectory() ) {

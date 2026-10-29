@@ -30,9 +30,6 @@ CREATE TABLE file_source.file (
 	;
 
 
--- every check that links exist (file_type link or hard) reads the whole table without it
-CREATE INDEX file_type_idx ON file_source.file (file_type)
-	;
 
 -- Links. A hard link is a row of type "hard" whose target_id is the row that holds the data.
 -- A symbolic link is a row of type "link" whose target_path is the path it points to (it need not exist).
