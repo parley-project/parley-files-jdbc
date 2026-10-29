@@ -36,6 +36,10 @@
 
 ### Changed (no code change needed)
 
+- **`file_data`'s primary key is changed to `(fileid, chunk_number)` on connect** in a database made with
+  `(chunk_number, fileid)` (unless `jdbcUpgradeSchema` is `false`; the README has the statements to run by hand).
+  New schemas already had the new order. With the old one every statement on a file's data scanned the whole table.
+  A large store waits once while the key is rebuilt.
 - **A connection that sat idle is checked before it is handed out again** (500 ms or more; `isValid`), and one
   that fails is closed and replaced. After a database restart or a firewall cutting idle connections the pool
   recovers at once; it used to hand out the dead connections until they reached their longest life.

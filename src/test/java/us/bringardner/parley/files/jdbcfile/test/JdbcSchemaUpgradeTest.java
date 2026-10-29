@@ -6,8 +6,11 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
+import java.util.TreeMap;
 import java.util.Properties;
 
 import org.junit.jupiter.api.AfterAll;
@@ -113,5 +116,62 @@ public class JdbcSchemaUpgradeTest {
 		for(String p : Arrays.asList("Apache Derby", null)) {
 			assertTrue(JdbcFileSourceFactory.alterSql(p, "owner").contains("SET DATA TYPE"), String.valueOf(p));
 		}
+	}
+
+	/** The columns of file_data's primary key, in key order. */
+	private static List<String> dataKey() throws Exception {
+		TreeMap<Short, String> columns = new TreeMap<>();
+		try(Connection con = shared().getConnection();
+				ResultSet rs = con.getMetaData().getPrimaryKeys(null, "FILE_SOURCE", "FILE_DATA")) {
+			while( rs.next()) {
+				columns.put(rs.getShort("KEY_SEQ"), rs.getString("COLUMN_NAME").toLowerCase());
+			}
+		}
+		return new ArrayList<>(columns.values());
+	}
+
+	/** Makes the key as it was before it led with fileid. */
+	private static void makeOldKey() throws Exception {
+		try(Connection con = shared().getConnection(); Statement st = con.createStatement()) {
+			st.executeUpdate("ALTER TABLE file_source.file_data DROP PRIMARY KEY");
+			st.executeUpdate("ALTER TABLE file_source.file_data ADD PRIMARY KEY (chunk_number, fileid)");
+		}
+		assertEquals(Arrays.asList("chunk_number", "fileid"), dataKey());
+	}
+
+	@Test
+	public void anOldDataKeyIsReorderedOnConnect() throws Exception {
+		makeOldKey();
+		connect(true);
+		assertEquals(Arrays.asList("fileid", "chunk_number"), dataKey());
+	}
+
+	@Test
+	public void theDataKeyUpgradeCanBeSwitchedOff() throws Exception {
+		makeOldKey();
+		connect(false);
+		assertEquals(Arrays.asList("chunk_number", "fileid"), dataKey());
+		connect(true);
+		assertEquals(Arrays.asList("fileid", "chunk_number"), dataKey());
+	}
+
+	@Test
+	public void aCurrentDataKeyIsLeftAlone() throws Exception {
+		try(Connection con = shared().getConnection()) {
+			shared().reorderDataKey(con);
+			assertEquals(false, shared().reorderDataKey(con));
+		}
+		assertEquals(Arrays.asList("fileid", "chunk_number"), dataKey());
+	}
+
+	@Test
+	public void theKeyStatementsFitTheDatabase() {
+		assertEquals(Arrays.asList("ALTER TABLE file_source.file_data DROP PRIMARY KEY, ADD PRIMARY KEY (fileid, chunk_number)"),
+				JdbcFileSourceFactory.reorderKeySql("MySQL", "PRIMARY"));
+		assertEquals(Arrays.asList("ALTER TABLE file_source.file_data DROP CONSTRAINT \"file_data_pkey\", ADD PRIMARY KEY (fileid, chunk_number)"),
+				JdbcFileSourceFactory.reorderKeySql("PostgreSQL", "file_data_pkey"));
+		assertEquals(Arrays.asList("ALTER TABLE file_source.file_data DROP PRIMARY KEY",
+				"ALTER TABLE file_source.file_data ADD PRIMARY KEY (fileid, chunk_number)"),
+				JdbcFileSourceFactory.reorderKeySql("HSQL Database Engine", null));
 	}
 }

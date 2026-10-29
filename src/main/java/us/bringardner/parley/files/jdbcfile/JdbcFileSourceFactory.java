@@ -513,6 +513,92 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 		return "ALTER TABLE file_source.file ALTER COLUMN "+column+" SET DATA TYPE "+type;
 	}
 
+	/**
+	 * Makes file_source.file_data's primary key (fileid, chunk_number) when the table was made with
+	 * (chunk_number, fileid): every statement on the table filters on fileid, and with the old order
+	 * each one scans the whole table. Runs on connect unless jdbcUpgradeSchema is "false". Never fails
+	 * the connection: problems (e.g. no ALTER rights, an unknown database) are logged, and the README
+	 * has the statement to run by hand. Rebuilding the key reads the whole table, so a large store
+	 * waits (and the table is locked) for that long, once.
+	 *
+	 * @return true if the key was changed
+	 */
+	public boolean reorderDataKey(Connection con) {
+		try {
+			DatabaseMetaData md = con.getMetaData();
+			List<String> key = dataKey(md);
+			if( key.size() != 2 || !key.get(0).equalsIgnoreCase("chunk_number") || !key.get(1).equalsIgnoreCase("fileid")) {
+				return false;
+			}
+			logInfo("Changing file_source.file_data's primary key from (chunk_number, fileid) to (fileid, chunk_number); a large store takes a while");
+			try(Statement st = con.createStatement()) {
+				for(String sql : reorderKeySql(md.getDatabaseProductName(), dataKeyName(md))) {
+					st.executeUpdate(sql);
+				}
+			}
+			if( !con.getAutoCommit()) {
+				con.commit();
+			}
+			logInfo("Changed file_source.file_data's primary key to (fileid, chunk_number)");
+			return true;
+		} catch (SQLException | RuntimeException e) {
+			logWarn("Can't change the primary key of file_source.file_data (see README, Upgrading an existing database): "+e);
+			return false;
+		}
+	}
+
+	/** The columns of file_data's primary key, in key order; empty if there is none or the table isn't found. */
+	private static List<String> dataKey(DatabaseMetaData md) throws SQLException {
+		return dataKeyColumns(md, false);
+	}
+
+	/** The name of file_data's primary key constraint, or null. */
+	private static String dataKeyName(DatabaseMetaData md) throws SQLException {
+		List<String> ret = dataKeyColumns(md, true);
+		return ret.isEmpty() ? null : ret.get(0);
+	}
+
+	private static List<String> dataKeyColumns(DatabaseMetaData md, boolean name) throws SQLException {
+		// identifier case and "schema" differ, as for columnSize()
+		String[][] tries = {
+				{null, "FILE_SOURCE", "FILE_DATA"},
+				{null, "file_source", "file_data"},
+				{"file_source", null, "file_data"}};
+		for(String[] t : tries) {
+			java.util.TreeMap<Short, String> columns = new java.util.TreeMap<>();
+			String keyName = null;
+			try(ResultSet rs = md.getPrimaryKeys(t[0], t[1], t[2])) {
+				while( rs.next()) {
+					columns.put(rs.getShort("KEY_SEQ"), rs.getString("COLUMN_NAME"));
+					keyName = rs.getString("PK_NAME");
+				}
+			}
+			if( !columns.isEmpty()) {
+				return name ? Arrays.asList(keyName) : new ArrayList<>(columns.values());
+			}
+		}
+		return new ArrayList<>();
+	}
+
+	/**
+	 * The statements that make file_data's primary key (fileid, chunk_number) for the given database
+	 * product; SQL standard syntax unless it's MySQL/MariaDB or PostgreSQL.
+	 * @param keyName the constraint's name (used for PostgreSQL), or null
+	 */
+	public static List<String> reorderKeySql(String product, String keyName) {
+		String p = product == null ? "" : product.toLowerCase(Locale.ROOT);
+		String add = "ADD PRIMARY KEY (fileid, chunk_number)";
+		String table = "ALTER TABLE file_source.file_data ";
+		if( p.contains("mysql") || p.contains("mariadb")) {
+			return Arrays.asList(table+"DROP PRIMARY KEY, "+add);
+		}
+		if( p.contains("postgres")) {
+			String name = keyName == null || keyName.isEmpty() ? "file_data_pkey" : keyName;
+			return Arrays.asList(table+"DROP CONSTRAINT \""+name.replace("\"", "\"\"")+"\", "+add);
+		}
+		return Arrays.asList(table+"DROP PRIMARY KEY", table+add);
+	}
+
 	/** The pool's thread starts at once; this only keeps a failure from waiting forever. */
 	private static final long POOL_START_WAIT_MS = 30_000;
 
@@ -567,6 +653,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 					boolean upgrade = !"false".equalsIgnoreCase(prop.getProperty(JDBC_UPGRADE_SCHEMA, "true").trim());
 					if( upgrade ) {
 						widenNameColumns(con);
+						reorderDataKey(con);
 					}
 					lockDialect = setUpLocks(con, upgrade);
 				}

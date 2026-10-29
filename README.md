@@ -221,3 +221,15 @@ user may not alter the table, or you'd rather do it yourself, run:
 | HSQLDB, SQL:2003 | `ALTER TABLE file_source.file ALTER COLUMN owner SET DATA TYPE VARCHAR(128);`<br>`ALTER TABLE file_source.file ALTER COLUMN group_name SET DATA TYPE VARCHAR(128);` |
 | PostgreSQL | `ALTER TABLE file_source.file ALTER COLUMN owner TYPE VARCHAR(128);`<br>`ALTER TABLE file_source.file ALTER COLUMN group_name TYPE VARCHAR(128);` |
 | MySQL | `ALTER TABLE file_source.file MODIFY owner VARCHAR(128) NOT NULL;`<br>`ALTER TABLE file_source.file MODIFY group_name VARCHAR(128) DEFAULT 'staff';` |
+
+The primary key of `file_source.file_data` is `(fileid, chunk_number)`. A table made with the older
+`(chunk_number, fileid)` makes every read, append and delete of a file's data scan the whole table, and the
+cost grows with the store. The key is changed when the factory connects (the same `jdbcUpgradeSchema`
+setting applies, and the change is logged). Rebuilding the key reads the whole table, so a large store waits
+once while it runs. To do it yourself:
+
+| Database | Statements |
+|---|---|
+| HSQLDB, SQL:2003 | `ALTER TABLE file_source.file_data DROP PRIMARY KEY;`<br>`ALTER TABLE file_source.file_data ADD PRIMARY KEY (fileid, chunk_number);` |
+| PostgreSQL | `ALTER TABLE file_source.file_data DROP CONSTRAINT "file_data_pkey", ADD PRIMARY KEY (fileid, chunk_number);` |
+| MySQL | `ALTER TABLE file_source.file_data DROP PRIMARY KEY, ADD PRIMARY KEY (fileid, chunk_number);` |
