@@ -75,12 +75,26 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 			all.addAll(java.util.Arrays.asList(cc.getInterfaces()));
 		}
 		Class<?>[] i = all.toArray(new Class<?>[all.size()]);
+		//  What the statement answers to getConnection(): the borrower's handle (the one that has it
+		//  now), not the driver's connection, which a caller could close behind the pool's back. It is
+		//  taken now, so a statement kept past close() still answers with its own, dead, handle and
+		//  not with the connection somebody else has by then.
+		final Object owned = owner;
+		final Object handle = owned != null ? owned : this;
 		Object proxy = java.lang.reflect.Proxy.newProxyInstance(c.getClassLoader(),
 				i, 
 				new InvocationHandler() {
 
 			public Object invoke(Object proxy, Method method, Object[] args) throws Throwable {
 				touch();
+				String name = method.getName();
+				if( args == null && name.equals("getConnection") ) {
+					return handle;
+				}
+				if( name.startsWith("execute") ) {
+					//  A statement made before a commit and run after it opens a transaction again
+					markDirty();
+				}
 				try {
 					Object ret = method.invoke(obj, args);
 			        return ret;
@@ -149,7 +163,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	}
 
 	private void markDirty() {
-		if( !autoCommitNow ) {
+		if( !autoCommitNow && !dirty ) {
 			dirty = true;
 		}
 	}
@@ -302,8 +316,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	public DatabaseMetaData getMetaData() throws SQLException {
 		touch();
-		markDirty();
-		return con.getMetaData();
+		return (DatabaseMetaData) getKeepalive(con.getMetaData());
 	}
 	/**
 	 * Gets this Connection's current transaction isolation level.
@@ -620,8 +633,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	public Statement createStatement(int arg0, int arg1, int arg2) throws SQLException {
 
-		markDirty();
-		return con.createStatement(arg0, arg1, arg2);
+		return (Statement) getKeepalive(con.createStatement(arg0, arg1, arg2));
 	}
 
 	/* (non-Javadoc)
@@ -629,16 +641,14 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	public PreparedStatement prepareStatement(String arg0, int arg1, int arg2, int arg3) throws SQLException {
 
-		markDirty();
-		return con.prepareStatement(arg0,arg1,arg2,arg3);
+		return (PreparedStatement) getKeepalive(con.prepareStatement(arg0,arg1,arg2,arg3));
 	}
 	/* (non-Javadoc)
 	 * @see java.sql.Connection#prepareCall(java.lang.String, int, int, int)
 	 */
 	public CallableStatement prepareCall(String arg0, int arg1, int arg2, int arg3) throws SQLException {
 
-		markDirty();
-		return con.prepareCall( arg0,  arg1,  arg2,  arg3);
+		return (CallableStatement) getKeepalive(con.prepareCall( arg0,  arg1,  arg2,  arg3));
 	}
 
 	/* (non-Javadoc)
@@ -646,24 +656,21 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	public PreparedStatement prepareStatement(String arg0, int arg1) throws SQLException {
 
-		markDirty();
-		return con.prepareStatement( arg0,  arg1);
+		return (PreparedStatement) getKeepalive(con.prepareStatement( arg0,  arg1));
 	}
 	/* (non-Javadoc)
 	 * @see java.sql.Connection#prepareStatement(java.lang.String, int[])
 	 */
 	public PreparedStatement prepareStatement(String arg0, int[] arg1) throws SQLException {
 
-		markDirty();
-		return con.prepareStatement( arg0,  arg1);
+		return (PreparedStatement) getKeepalive(con.prepareStatement( arg0,  arg1));
 	}
 	/* (non-Javadoc)
 	 * @see java.sql.Connection#prepareStatement(java.lang.String, java.lang.String[])
 	 */
 	public PreparedStatement prepareStatement(String arg0, String[] arg1) throws SQLException {
 
-		markDirty();
-		return con.prepareStatement( arg0, arg1);
+		return (PreparedStatement) getKeepalive(con.prepareStatement( arg0, arg1));
 	}
 
 	/* (non-Javadoc)
