@@ -117,14 +117,30 @@ behind HikariCP, and its 99th percentile latency under contention is several tim
 has a query to run (the last rows) the gap is about a factor of two, and in the file system, where every
 operation does real database work, it is not measurable. DBCP2 was the slowest throughout.
 
-These are single runs on one machine against in-memory databases. A database reached over a network makes
-every operation slower, so the pool matters less. To measure your own setup, run the file system test with
+**A mail server on MySQL.** The B1 test sends 500 messages of 5 KB through the SMTP server into a JDBC mail
+store on MySQL 8.4 and reads them back over IMAP, on a 2-vCPU server that also ran MySQL and the client. Messages
+per second until all are in the mailbox (higher is better; three runs of each pool, the order rotated):
+
+| SMTP connections | parley | HikariCP | DBCP2 |
+|---|---|---|---|
+| 1 | 17.3, 17.7, 17.5 | 18.4, 17.6, 17.4 | 15.7, 15.5, 15.6 |
+| 8 | 15.7, 15.8, 15.9 | 16.2, 17.0, 16.2 | 14.7, 14.2, 14.4 |
+
+With one connection the library's own pool and HikariCP are level, within the spread of their runs. With 8,
+HikariCP is about 4% faster and every one of its runs beat every run of the library's pool. DBCP2 is about 10%
+slower in both, and sends 19 more statements per message (250, against 231). A statement takes 0.1 to 2 ms
+and a pool operation well under a microsecond, so the one lock that holds the library's own pool back in
+the pool-alone test costs little here: delivery into the mailbox is the limit.
+
+The first two tables are single runs on one machine against in-memory databases. A database reached over a
+network makes every operation slower, so the pool matters less. To measure your own setup, run the file system test with
 `mvn test -Dtest=JdbcFileSystemPerfTest -Dparley.perf=true -Dparley.perf.pool=hikari` (or `dbcp2`, `parley`),
 and see `pool-benchmark/README.md` for the pool benchmark.
 
-**Which to use.** The library's own pool needs no dependency and does what the file system needs. Choose
-HikariCP if many threads borrow connections at once for very short work, or if you already run it and want one
-pool to configure. DBCP2 works but was the slowest here.
+**Which to use.** The library's own pool is the default: it needs no dependency, it does what the file system
+needs, and on the mail server test it was level with HikariCP for one connection and about 4% behind with 8.
+Choose HikariCP if many threads borrow connections at once, or if you already run it and want one pool to
+configure. DBCP2 works but was the slowest in every test, about 10% behind on the mail server test.
 
 ## Users and permissions
 
