@@ -374,25 +374,14 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 				return false;
 			}
 			boolean moved = !link && FILE.equals(type) && passContentToAHardLink();
-			String sql = "delete from file_source.file where fileid = ?";
 			long id = fileid;
-			if( executeUpdate(sql, id)== 1) {
+			if( deleteRows(id, !moved) ) {
 				if( link || !FILE.equals(type) || moved ) {
 					changedStructure();
-				}
-				if( !moved ) {
-					try(Connection con = factory.getConnection();
-							PreparedStatement pstmt = con.prepareStatement("delete from file_source.file_data where fileid=?")) {
-						pstmt.setLong(1, id);
-						pstmt.executeUpdate();
-					} catch (SQLException e) {
-						throw new IOException(e);
-					}
 				}
 				fileid = null;
 				forgetResolution();
 				changed();
-				touchParent();
 				if( parent != null) {
 					parent.dereferenceChilderen();
 				}
@@ -400,6 +389,73 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			}
 		}
 		return ret;
+	}
+
+	/**
+	 * The row, its content (unless a hard link took it over) and the parent folder's modified time
+	 * in one transaction: one commit, and a failure leaves no content rows without their file.
+	 * @return true if the row was there to delete
+	 */
+	private boolean deleteRows(long id, boolean withContent) throws IOException {
+		Long parentId = null;
+		if( parent != null && parent.rowExists() ) {
+			parentId = parent.fileid;
+		}
+		for (int attempt = 1; ; attempt++) {
+			try(Connection con = factory.getConnection()) {
+				con.setAutoCommit(false);
+				try {
+					boolean deleted;
+					try(PreparedStatement pstmt = con.prepareStatement("delete from file_source.file where fileid = ?")) {
+						pstmt.setLong(1, id);
+						deleted = pstmt.executeUpdate() == 1;
+					}
+					if( deleted ) {
+						if( withContent ) {
+							try(PreparedStatement pstmt = con.prepareStatement("delete from file_source.file_data where fileid=?")) {
+								pstmt.setLong(1, id);
+								pstmt.executeUpdate();
+							}
+						}
+						if( parentId != null ) {
+							// as touchParent: a directory's modified time is when something was last taken out of it
+							try(PreparedStatement pstmt = con.prepareStatement(
+									"update file_source.file set "+LAST_MODIFIED_DATE+" = ? where fileid = ?")) {
+								pstmt.setTimestamp(1, new Timestamp(System.currentTimeMillis()));
+								pstmt.setLong(2, parentId);
+								pstmt.executeUpdate();
+							}
+						}
+					}
+					con.commit();
+					fieldCache.clear();
+					changed();
+					if( deleted && parentId != null ) {
+						parent.fieldCache.clear();
+						parent.changed();
+					}
+					return deleted;
+				} catch (SQLException | RuntimeException e) {
+					try {
+						con.rollback();
+					} catch (SQLException e2) {
+						// the connection is gone; what it did is undone with it
+					}
+					throw e;
+				}
+			} catch (SQLException e) {
+				if( attempt >= APPEND_ATTEMPTS || !isRetryable(e) ) {
+					throw new IOException(e);
+				}
+				// a deadlock or serialization failure: the database rolled it back, so do it again
+				try {
+					Thread.sleep(attempt * 5L + (long) (Math.random() * 10));
+				} catch (InterruptedException ie) {
+					Thread.currentThread().interrupt();
+					throw new IOException(e);
+				}
+			}
+		}
 	}
 
 	@Override
