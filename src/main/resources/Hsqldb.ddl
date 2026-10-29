@@ -33,7 +33,7 @@ CREATE TABLE file_source.file_data (
 	FILEID BIGINT NOT NULL  ,
 	LENGTH INT NOT NULL  ,
 	DATA LONGVARBINARY,
-	primary key (chunk_number,fileid)
+	primary key (fileid,chunk_number)
 	)
 	;
 
