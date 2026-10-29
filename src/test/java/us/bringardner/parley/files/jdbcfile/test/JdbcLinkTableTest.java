@@ -230,6 +230,62 @@ public class JdbcLinkTableTest {
 	}
 
 	@Test
+	public void aLinkMadeWhileAHandleWasOpenIsNotLostWhenTheFileIsDeleted() throws Exception {
+		write("/links/stale.txt", "keep me");
+		FileSource old = at("/links/stale.txt");
+		assertTrue(old.exists());          // (this handle has read the row: its link count is 0)
+		factory().createLink(at("/links/stale-link"), at("/links/stale.txt"));
+		assertTrue(old.delete());          // (and now deletes it, not knowing)
+		assertEquals("keep me", read("/links/stale-link"));
+		assertFalse(old.exists());
+		assertNull(entry(id("/links/stale-link")), "the link is the file now");
+	}
+
+	@Test
+	public void aLinkHasNoDataOfItsOwn() throws Exception {
+		write("/links/nd.txt", "data");
+		factory().createLink(at("/links/nd-hard"), at("/links/nd.txt"));
+		factory().createSymbolicLink(at("/links/nd-sym"), at("/links/nd.txt"));
+		assertEquals(0, one("select count(*) from file_source.file_data where fileid = ?", id("/links/nd-hard")));
+		assertEquals(0, one("select count(*) from file_source.file_data where fileid = ?", id("/links/nd-sym")));
+		assertEquals("data", read("/links/nd-hard"));
+		assertEquals("data", read("/links/nd-sym"));
+	}
+
+	@Test
+	public void aFolderReachedThroughALinkSeesTheChanges() throws Exception {
+		assertTrue(at("/links/real").mkdirs());
+		write("/links/real/one.txt", "1");
+		factory().createSymbolicLink(at("/links/via"), at("/links/real"));
+		FileSource kept = at("/links/via");
+		assertEquals(1, kept.listFiles().length);
+
+		// a file made through the link is in the folder, whichever way it is listed
+		write("/links/via/two.txt", "2");
+		assertEquals(2, kept.listFiles().length, "the kept handle of the link");
+		assertEquals(2, at("/links/real").listFiles().length, "the folder itself");
+		assertEquals("2", read("/links/real/two.txt"));
+
+		// and one made in the folder is seen through the link
+		write("/links/real/three.txt", "3");
+		assertEquals(3, kept.listFiles().length);
+
+		assertTrue(at("/links/via/two.txt").delete());
+		assertEquals(2, kept.listFiles().length);
+		assertEquals(2, at("/links/real").listFiles().length);
+	}
+
+	@Test
+	public void theRealFoldersTimeMovesWhenAFileIsMadeThroughALink() throws Exception {
+		assertTrue(at("/links/timed").mkdirs());
+		factory().createSymbolicLink(at("/links/timed-via"), at("/links/timed"));
+		long before = at("/links/timed").lastModified();
+		Thread.sleep(1100);
+		write("/links/timed-via/f.txt", "x");
+		assertTrue(at("/links/timed").lastModified() > before);
+	}
+
+	@Test
 	public void theLinkSchemaIsMadeOnConnectWhenMissing() throws Exception {
 		JdbcFileSourceFactory f = factory();
 		try (Connection con = f.getConnection(); Statement st = con.createStatement()) {

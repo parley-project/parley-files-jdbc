@@ -40,7 +40,10 @@
   Making a link writes its row, its entry, the owner's count and the folder's modified time in one transaction;
   deleting one, or deleting a file whose data a hard link takes over, keeps the entries and counts right. Both are made on
   connect when missing (unless `jdbcUpgradeSchema` is `false`; the README has the statements). Links made by an earlier
-  version are not converted. The link rows still hold their target in the first chunk, which readers use for now.
+  version are not converted. A link row has no data of its own. Whether a path is a link now comes with the row that is
+  read anyway, so there is no database-wide check for links any more: before, one link anywhere slowed every operation
+  (B1: 11.7 messages per second with one link in the database, 17 without; now 17 either way), a delete scanned every
+  hard link in the database, and a delete of a file whose data a hard link takes over was not atomic.
 - **`file_source.file` has an index on `file_type`**, made on connect when it is missing (unless `jdbcUpgradeSchema`
   is `false`; the README has the statement for doing it by hand) and in the `.ddl` files. The check whether any
   link exists runs every two seconds and read the whole table: 0.56 s at a million files, 0.02 ms now. An insert

@@ -1056,52 +1056,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	}
 
 
-	// ---- links (see JdbcFileSource.LINK and HARD)
-
-	/** Set once a link is known to exist, so a database that has none costs nothing. */
-	private volatile boolean linksKnown;
-	private final java.util.concurrent.atomic.AtomicLong linksCheckedAt = new java.util.concurrent.atomic.AtomicLong();
-	private final java.util.concurrent.atomic.AtomicInteger linkChecks = new java.util.concurrent.atomic.AtomicInteger();
-	/** How long "there are no links" is believed: another client may make one. */
-	private static final long LINK_CHECK_INTERVAL = 2000;
-
-	/** @return true once the database is known to hold a link; a link made by another client is seen within a couple of seconds */
-	boolean linksPossible() {
-		if( linksKnown ) {
-			return true;
-		}
-		long now = System.currentTimeMillis();
-		long last = linksCheckedAt.get();
-		// (one thread looks per interval: the others, arriving at the same moment, lose the swap)
-		if( now - last < LINK_CHECK_INTERVAL || !linksCheckedAt.compareAndSet(last, now) ) {
-			return false;
-		}
-		linkChecks.incrementAndGet();
-		try(Connection con = getConnection();
-				PreparedStatement pstmt = con.prepareStatement(
-						"select fileid from file_source.file where file_type = ? or file_type = ?")) {
-			pstmt.setString(1, JdbcFileSource.LINK);
-			pstmt.setString(2, JdbcFileSource.HARD);
-			pstmt.setMaxRows(1);
-			try(ResultSet rs = pstmt.executeQuery()) {
-				if( rs.next() ) {
-					linksKnown = true;
-				}
-			}
-		} catch (SQLException | IOException e) {
-			// can't tell: treat it as none until the next look
-		}
-		return linksKnown;
-	}
-
-	/** How many times this factory has asked the database whether any link exists (for tests). */
-	public int getLinkChecks() {
-		return linkChecks.get();
-	}
-
-	void linksMade() {
-		linksKnown = true;
-	}
+	// ---- links (see JdbcFileSource.LINK and HARD, and the file_link table)
 
 	/** A handle for the row with this id, or null if there is none. */
 	JdbcFileSource handleForId(long id) throws IOException {
