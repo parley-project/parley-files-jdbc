@@ -161,18 +161,19 @@ saves the 5 updates each message made (see the CHANGELOG for the numbers).
 
 ## Links
 
-Symbolic links and hard links work. A link is a row of its own in `file_source.file`, and where it leads is
-kept in `file_source.file_link`:
+Symbolic links and hard links work. The schema is the one a Unix file system has: `file_source.file` holds
+inodes (type, owner, permissions, times, length), `file_source.dirent` holds names, and a name is a row
+`(parent_id, name, inode_id)` whose primary key `(parent_id, name)` is what makes `createNewFile()` and `mkdir()`
+atomic. The data (`file_data`), the attributes and the locks are all keyed by the inode, and nothing that
+moves a name changes the inode.
 
-| `file_type` | What the row is | Its entry in `file_link` |
-|---|---|---|
-| `link` | A symbolic link, as on POSIX. The target needn't exist. | `target_path`: the path it points to |
-| `hard` | One more name for a file, so it follows a rename of the file. | `target_id`: the `fileid` of the row that holds the data |
-
-A link row has no data of its own. `file.link_count` counts the hard links that point at a row, so deleting a file
-that none points at needs no extra lookup. When a file that hard links point at is deleted, the first of them
-(the lowest `link_id`) takes the data and attributes over and the others are repointed, in one transaction; the
-other names of a file are found through the index on `file_link (target_id)`.
+* A **hard link** is a second name (a `dirent`) for the same inode. `file.link_count` counts the names. Deleting
+  one name removes its `dirent` and takes one off the count in one transaction, and the data goes with the last
+  name. Nothing is handed over or copied, so the others, their open handles and their locks are unaffected, and a
+  rename of one name leaves the others where they are. The count is raised only while it is above 0, so a link
+  cannot be made to a file whose last name is being deleted.
+* A **symbolic link** is an inode of type `link` with one name, and where it leads is kept in
+  `file_source.file_link` (`target_path`, the path it points to; the target needn't exist).
 
 A path answers for what it leads to: type, length, content, listing, permissions and streams, also below a
 linked directory. A write through a link changes the file it leads to (the link stays a link).
@@ -183,9 +184,9 @@ Whether a path is a link comes with the row that is read for it, so a path that 
 extra, and a database with links is as fast as one without (B1: 17 messages per second with one link in the
 database, as without). See [Links](https://github.com/parley-project/parley-files#links) in parley-files.
 
-Code or tools that read the tables directly should know that a `link` or `hard` row is not a file with its
-own data. Links made by an earlier version, which kept their target in the first chunk of the row's data, are
-not converted: delete them and make them again.
+Code or tools that read the tables directly should know that a name is in `dirent`, not in `file`, and that
+a `link` inode is not a file with its own data. Links made by an earlier version, which kept their target in the
+first chunk of the row's data, are not converted: delete them and make them again.
 
 ## Locking
 
@@ -194,7 +195,7 @@ In short, for `JdbcFileSourceFactory`:
 | | |
 |---|---|
 | Locks | `CLUSTER` on PostgreSQL 10+, MySQL 8+, MariaDB 10.3+ (every machine using the database); `PROCESS` (this JVM) on HSQLDB and others. Range locks work. |
-| Atomic create | `createNewFile()` and `mkdir()` are atomic (the unique key on parentid, name) |
+| Atomic create | `createNewFile()` and `mkdir()` are atomic (the primary key of `dirent`, `(parent_id, name)`) |
 | Capabilities (`getCapabilities()`) | lock scope as above; atomic create and mkdir; replace (`renameTo(dest, true)`) not atomic: delete, then rename; durable sync (each write is committed); operations in one order |
 | FileChannel | through the file's streams and random access |
 | `map()` | `READ_ONLY` and `PRIVATE` map a local copy of the region, read when it is mapped; `READ_WRITE` throws `UnsupportedOperationException` |
@@ -267,13 +268,27 @@ once while it runs. To do it yourself:
 | PostgreSQL | `ALTER TABLE file_source.file_data DROP CONSTRAINT "file_data_pkey", ADD PRIMARY KEY (fileid, chunk_number);` |
 | MySQL | `ALTER TABLE file_source.file_data DROP PRIMARY KEY, ADD PRIMARY KEY (fileid, chunk_number);` |
 
-The link column and table (see Links) are made when the
-factory connects (the same `jdbcUpgradeSchema` setting applies, and it is logged), and new schemas made from the
-`.ddl` files have them. A database that already holds links made by an earlier version is not converted: delete
-those links and make them again. To make them yourself, on any of the databases:
+The names and links (see Links) are moved when the factory connects (the same `jdbcUpgradeSchema` setting
+applies, and it is logged): `file_source.dirent` is made, every row of `file` gets a name in it, each old `hard`
+row becomes one more name for the inode it pointed at (and is removed), `file.link_count` becomes the number of
+names, and `file.name` and `file.parentid` (and the unique key on them) are dropped. The copy is one transaction;
+a store with many rows waits once while it runs. New schemas made from the `.ddl` files have all of this. A
+database that already holds links made by an earlier version, which kept their target in the first chunk of the
+row's data, is not converted: delete those links and make them again. To do it yourself, on any of the databases:
 
 ```sql
-ALTER TABLE file_source.file ADD COLUMN link_count INT DEFAULT 0 NOT NULL;
-CREATE TABLE file_source.file_link (LINK_ID BIGINT NOT NULL PRIMARY KEY, TARGET_ID BIGINT, TARGET_PATH VARCHAR(4096));
-CREATE INDEX file_link_target_idx ON file_source.file_link (target_id);
+ALTER TABLE file_source.file ADD COLUMN link_count INT DEFAULT 0 NOT NULL;   -- only if it is missing
+CREATE TABLE file_source.file_link (LINK_ID BIGINT NOT NULL PRIMARY KEY, TARGET_ID BIGINT, TARGET_PATH VARCHAR(4096));   -- only if it is missing
+CREATE TABLE file_source.dirent (PARENT_ID BIGINT NOT NULL, NAME VARCHAR(250) NOT NULL, INODE_ID BIGINT NOT NULL, PRIMARY KEY (PARENT_ID, NAME));
+CREATE INDEX dirent_inode_idx ON file_source.dirent (INODE_ID);
+INSERT INTO file_source.dirent (parent_id, name, inode_id) SELECT parentid, name, fileid FROM file_source.file WHERE file_type <> 'hard';
+INSERT INTO file_source.dirent (parent_id, name, inode_id) SELECT h.parentid, h.name, l.target_id FROM file_source.file h JOIN file_source.file_link l ON l.link_id = h.fileid WHERE h.file_type = 'hard' AND l.target_id IS NOT NULL;
+UPDATE file_source.file SET link_count = link_count + 1;
+DELETE FROM file_source.file_link WHERE link_id IN (SELECT fileid FROM file_source.file WHERE file_type = 'hard');
+DELETE FROM file_source.file_data WHERE fileid IN (SELECT fileid FROM file_source.file WHERE file_type = 'hard');
+DELETE FROM file_source.file WHERE file_type = 'hard';
 ```
+
+and then drop the old columns: on PostgreSQL and MySQL `ALTER TABLE file_source.file DROP COLUMN name, DROP COLUMN parentid;`, on
+HSQLDB and SQL:2003 `ALTER TABLE file_source.file DROP COLUMN name CASCADE;` and the same for `parentid`. Take a
+backup first, and run the `UPDATE` only once.

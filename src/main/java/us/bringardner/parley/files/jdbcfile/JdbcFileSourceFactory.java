@@ -55,12 +55,12 @@ import java.util.List;
 import java.util.Locale;
 
 /**
- * FileSource factory for a file system kept in a database (tables {@code file_source.file} and {@code file_data}), through JDBC.
+ * FileSource factory for a file system kept in a database (tables {@code file_source.file} (the inodes), {@code dirent} (the names) and {@code file_data}), through JDBC.
  * <p>
  * <h2>Locks, atomic create and FileChannel</h2>
  * <ul>
  * <li><b>Locks:</b> {@code CLUSTER} scope on PostgreSQL 10+, MySQL 8+ and MariaDB 10.3+ with the lock tables ({@code file_source.file_lock}, {@code file_lock_range}, created on connect): every process on every machine that uses the database. Each region held is a row kept row-locked by its holder's own connection (one database connection per lock held); a dead holder's regions are free again. Range locks work. On other databases (HSQLDB) {@code PROCESS} scope: this JVM only.</li>
- * <li><b>Atomic create:</b> {@code createNewFile()} and {@code mkdir()} are atomic: the unique key on (parentid, name) lets one of several racing inserts in, and the others are told false.</li>
+ * <li><b>Atomic create:</b> {@code createNewFile()} and {@code mkdir()} are atomic: the primary key of {@code file_source.dirent} (parent_id, name) lets one of several racing inserts in, and the others are told false.</li>
  * <li><b>FileChannel:</b> reads and writes through the file's streams and random access.</li>
  * <li><b>map():</b> {@code READ_ONLY} and {@code PRIVATE} map a local copy of the region, read when it is mapped; {@code READ_WRITE} throws {@code UnsupportedOperationException} (a copy can't write back).</li>
  * <li><b>force():</b> writes the chunk a stream still holds; every write is committed, so that is as durable as the database makes it.</li>
@@ -607,8 +607,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	}
 
 	/**
-	 * Makes what links are kept in when it is missing: the column file.link_count (how many hard links
-	 * point at a row) and the table file_link (a hard link's target row, a symbolic link's target path),
+	 * Makes what links are kept in when it is missing: the column file.link_count (how many names a row has) and the table file_link (a hard link's target row, a symbolic link's target path),
 	 * with an index on its target. Runs on connect unless jdbcUpgradeSchema is "false". Never fails the
 	 * connection: problems (e.g. no rights to alter a table) are logged, and the README has the
 	 * statements to run by hand. A database that already holds links made by an older version is not
@@ -648,11 +647,15 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	public static final String FILE_LINK_INDEX_SQL = "CREATE INDEX file_link_target_idx ON file_source.file_link (target_id)";
 
 	private static boolean linkTableExists(DatabaseMetaData md) throws SQLException {
+		return tableExists(md, "file_link");
+	}
+
+	private static boolean tableExists(DatabaseMetaData md, String table) throws SQLException {
 		// identifier case and "schema" differ, as for columnSize()
 		String[][] tries = {
-				{null, "FILE_SOURCE", "FILE_LINK"},
-				{null, "file_source", "file_link"},
-				{"file_source", null, "file_link"}};
+				{null, "FILE_SOURCE", table.toUpperCase(Locale.ROOT)},
+				{null, "file_source", table},
+				{"file_source", null, table}};
 		for(String[] t : tries) {
 			try(ResultSet rs = md.getTables(t[0], t[1], t[2], null)) {
 				if( rs.next()) {
@@ -661,6 +664,101 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 			}
 		}
 		return false;
+	}
+
+	public static final String DIRENT_TABLE_SQL = "CREATE TABLE file_source.dirent ("
+			+ "PARENT_ID BIGINT NOT NULL, NAME VARCHAR(250) NOT NULL, INODE_ID BIGINT NOT NULL, PRIMARY KEY (PARENT_ID, NAME))";
+	public static final String DIRENT_INDEX_SQL = "CREATE INDEX dirent_inode_idx ON file_source.dirent (INODE_ID)";
+
+	/**
+	 * Moves a database made before names were separate from files to the inode model: every row of
+	 * file_source.file keeps its id as an inode and its name (name and parentid) becomes a row of
+	 * file_source.dirent; a hard link row becomes one more dirent for the inode it pointed at, and
+	 * file.link_count becomes the number of names (it counted the hard links). Then file.name and
+	 * file.parentid, and the unique key on them, are dropped. Runs on connect unless jdbcUpgradeSchema is
+	 * "false". Never fails the connection: problems are logged, and the README has the statements to run
+	 * by hand. The copy is one transaction; it is not made again if it was made and only dropping the
+	 * columns failed.
+	 *
+	 * @return what was done (the table, the copy, the columns dropped)
+	 */
+	public List<String> migrateToDirents(Connection con) {
+		List<String> ret = new ArrayList<>();
+		try {
+			DatabaseMetaData md = con.getMetaData();
+			boolean legacy = columnSize(md, "name") >= 0;
+			if( !tableExists(md, "dirent") ) {
+				try(Statement st = con.createStatement()) {
+					st.executeUpdate(DIRENT_TABLE_SQL);
+					st.executeUpdate(DIRENT_INDEX_SQL);
+				}
+				if( !con.getAutoCommit()) {
+					con.commit();
+				}
+				ret.add("dirent");
+			}
+			if( !legacy ) {
+				return ret;
+			}
+			boolean auto = con.getAutoCommit();
+			try {
+				con.setAutoCommit(false);
+				long names;
+				try(Statement st = con.createStatement(); ResultSet rs = st.executeQuery("SELECT count(*) FROM file_source.dirent")) {
+					names = rs.next() ? rs.getLong(1) : 0;
+				}
+				if( names == 0 ) {
+					try(Statement st = con.createStatement()) {
+						st.executeUpdate("INSERT INTO file_source.dirent (parent_id, name, inode_id) "
+								+ "SELECT parentid, name, fileid FROM file_source.file WHERE file_type <> 'hard'");
+						st.executeUpdate("INSERT INTO file_source.dirent (parent_id, name, inode_id) "
+								+ "SELECT h.parentid, h.name, l.target_id FROM file_source.file h "
+								+ "JOIN file_source.file_link l ON l.link_id = h.fileid "
+								+ "JOIN file_source.file o ON o.fileid = l.target_id "
+								+ "WHERE h.file_type = 'hard' AND l.target_id IS NOT NULL");
+						// link_count was the hard links; it is now the names, and a file has at least one
+						st.executeUpdate("UPDATE file_source.file SET link_count = link_count + 1");
+						st.executeUpdate("DELETE FROM file_source.file_link WHERE link_id IN "
+								+ "(SELECT fileid FROM file_source.file WHERE file_type = 'hard')");
+						st.executeUpdate("DELETE FROM file_source.file_data WHERE fileid IN "
+								+ "(SELECT fileid FROM file_source.file WHERE file_type = 'hard')");
+						st.executeUpdate("DELETE FROM file_source.file WHERE file_type = 'hard'");
+					}
+					con.commit();
+					ret.add("copy");
+				} else {
+					con.rollback();
+				}
+			} catch (SQLException | RuntimeException e) {
+				con.rollback();
+				throw e;
+			} finally {
+				con.setAutoCommit(auto);
+			}
+			try(Statement st = con.createStatement()) {
+				for(String sql : dropNameColumnsSql(md.getDatabaseProductName())) {
+					st.executeUpdate(sql);
+				}
+			}
+			if( !con.getAutoCommit()) {
+				con.commit();
+			}
+			ret.add("drop name, parentid");
+			logInfo("Moved the names of file_source.file to file_source.dirent: "+ret);
+		} catch (SQLException | RuntimeException e) {
+			logWarn("Can't move the names to file_source.dirent (see README, Upgrading an existing database): "+e);
+		}
+		return ret;
+	}
+
+	/** The statements that drop file.name and file.parentid, and the unique key on them, for the given database product. */
+	public static List<String> dropNameColumnsSql(String product) {
+		String p = product == null ? "" : product.toLowerCase(Locale.ROOT);
+		String table = "ALTER TABLE file_source.file ";
+		if( p.contains("mysql") || p.contains("mariadb") || p.contains("postgres")) {
+			return Arrays.asList(table+"DROP COLUMN name, DROP COLUMN parentid");
+		}
+		return Arrays.asList(table+"DROP COLUMN name CASCADE", table+"DROP COLUMN parentid CASCADE");
 	}
 
 	/** Whether opening a file for reading writes its access time (see {@link #JDBC_ACCESS_TIME}); read at connect. */
@@ -727,6 +825,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 						widenNameColumns(con);
 						reorderDataKey(con);
 						addLinkSchema(con);
+						migrateToDirents(con);
 					}
 					lockDialect = setUpLocks(con, upgrade);
 				}
@@ -1013,37 +1112,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	}
 
 
-	// ---- links (see JdbcFileSource.LINK and HARD, and the file_link table)
-
-	/** A handle for the row with this id, or null if there is none. */
-	JdbcFileSource handleForId(long id) throws IOException {
-		java.util.ArrayDeque<String> names = new java.util.ArrayDeque<>();
-		long at = id;
-		for(int guard = 0; at != 0 && guard < 256; guard++) {
-			String name = null;
-			long parent = 0;
-			boolean found = false;
-			try(Connection con = getConnection();
-					PreparedStatement pstmt = con.prepareStatement("select name,parentid from file_source.file where fileid = ?")) {
-				pstmt.setLong(1, at);
-				try(ResultSet rs = pstmt.executeQuery()) {
-					if( rs.next() ) {
-						found = true;
-						name = rs.getString(1);
-						parent = rs.getLong(2);
-					}
-				}
-			} catch (SQLException e) {
-				throw new IOException(e);
-			}
-			if( !found ) {
-				return null;
-			}
-			names.addFirst(name);
-			at = parent;
-		}
-		return (JdbcFileSource) createFileSource("/" + String.join("/", names));
-	}
+	// ---- links (see JdbcFileSource.LINK, the file_link table, and file_source.dirent for hard links)
 
 	private JdbcFileSource local(FileSource f) throws IOException {
 		if( f instanceof JdbcFileSource && ((JdbcFileSource) f).getFileSourceFactory() == this ) {
@@ -1055,7 +1124,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 		throw new IOException("A link has to be between files of one database: " + f);
 	}
 
-	/** A symbolic link is a row that holds the path it points to. The path doesn't have to exist. */
+	/** A symbolic link is an inode that holds the path it points to. The path doesn't have to exist. */
 	@Override
 	public FileSource createSymbolicLink(FileSource newFileLink, FileSource existingFile) throws IOException {
 		JdbcFileSource link = local(newFileLink);
@@ -1063,7 +1132,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 		return link;
 	}
 
-	/** A hard link is a row that shares the data of a file: the file is there until its last name is deleted. */
+	/** A hard link is another name (a dirent) for a file's inode: the file is there until its last name is deleted. */
 	@Override
 	public FileSource createLink(FileSource newFileLink, FileSource existingFile) throws IOException {
 		JdbcFileSource link = local(newFileLink);

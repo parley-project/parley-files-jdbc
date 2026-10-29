@@ -174,8 +174,8 @@ public class JdbcPostgresLockTest extends AbstractLockTests {
 			try (Connection con = DriverManager.getConnection(url); Statement st = con.createStatement()) {
 				con.setAutoCommit(false);
 				SQLException e = assertThrows(SQLException.class, () -> st.executeQuery(
-						"SELECT r.id FROM file_source.file_lock_range r JOIN file_source.file f ON f.fileid = r.fileid "
-								+ "WHERE f.name = 'moved' FOR UPDATE OF r NOWAIT"));
+						"SELECT r.id FROM file_source.file_lock_range r JOIN file_source.dirent d ON d.inode_id = r.fileid "
+								+ "WHERE d.name = 'moved' FOR UPDATE OF r NOWAIT"));
 				assertEquals("55P03", e.getSQLState());
 				con.rollback();
 			}
@@ -218,7 +218,7 @@ public class JdbcPostgresLockTest extends AbstractLockTests {
 		f.tryLock().release(); // makes the file's mutex row
 		long fileid;
 		try (Connection con = DriverManager.getConnection(url); Statement st = con.createStatement();
-				ResultSet rs = st.executeQuery("SELECT fileid FROM file_source.file WHERE name = 'stuck'")) {
+				ResultSet rs = st.executeQuery("SELECT inode_id FROM file_source.dirent WHERE name = 'stuck'")) {
 			assertTrue(rs.next());
 			fileid = rs.getLong(1);
 		}
@@ -247,7 +247,7 @@ public class JdbcPostgresLockTest extends AbstractLockTests {
 		assertNotNull(l);
 		long fileid;
 		try (Connection con = DriverManager.getConnection(url); Statement st = con.createStatement();
-				ResultSet rs = st.executeQuery("SELECT fileid FROM file_source.file WHERE name = 'stale'")) {
+				ResultSet rs = st.executeQuery("SELECT inode_id FROM file_source.dirent WHERE name = 'stale'")) {
 			assertTrue(rs.next());
 			fileid = rs.getLong(1);
 		}

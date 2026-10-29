@@ -8,6 +8,16 @@
   `jdbcUser` and `name` (saved connections need the new names); `parley.jdbc.bufferSize` is
   `parley.files.jdbc.bufferSize`, and `JdbcFile.dbid` is `parley.files.jdbc.dbid`.
 
+### Changed (needs a schema change, made on connect)
+
+- **Names are separate from files (the inode model).** `file_source.file` holds inodes, and the new
+  `file_source.dirent (parent_id, name, inode_id)` holds the names; `file.name` and `file.parentid` are gone. A hard
+  link is a second name for the same inode and `file.link_count` counts the names. Deleting the first name of a hard
+  linked file no longer hands its data to another link: nothing moves, so the other names keep their ids, open
+  handles and locks. Only the last name removes the data. A database of the earlier model is moved when the factory
+  connects (see the README, "Upgrading an existing database"). Code that reads the tables directly must look names
+  up in `dirent`. A stream opened through a name that is deleted afterwards still stops reading (as before).
+
 ### Changed (needs a code change)
 
 - **A connection from `JdbcConnectionPool.getConnection()` is a handle of its own for each checkout** (a package

@@ -2,8 +2,6 @@ create schema file_source;
 
 CREATE TABLE file_source.file (
 	FILEID BIGINT NOT NULL UNIQUE generated always as IDENTITY,
-	PARENTID BIGINT DEFAULT 0 ,
-	NAME VARCHAR(250) NOT NULL ,
 	OWNER VARCHAR(128) NOT NULL ,
 	GROUP_NAME VARCHAR(128)  DEFAULT 'staff',
 	CREATE_TIME TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -24,16 +22,28 @@ CREATE TABLE file_source.file (
 	FILE_TYPE VARCHAR(10) NOT NULL ,
 	LENGTH BIGINT DEFAULT 0 ,
 	CHUNK_COUNT INT DEFAULT 0 ,
-	LINK_COUNT INT DEFAULT 0 NOT NULL ,
-	UNIQUE  (PARENTID,NAME)
+	LINK_COUNT INT DEFAULT 1 NOT NULL
 	) 
 	;
 
 
 
--- Links. A hard link is a row of type "hard" whose target_id is the row that holds the data.
--- A symbolic link is a row of type "link" whose target_path is the path it points to (it need not exist).
--- file.link_count is the number of hard links that point at a row, so a file with none costs no lookup.
+-- Names. A dirent is one name for an inode (a row of file): in the folder parent_id (the inode of a
+-- directory, 0 for the root itself) it is called name. A hard link is a second dirent for the same
+-- inode, so the data, attributes and locks (all keyed by the inode) never move when a name is deleted
+-- or renamed. file.link_count is the number of dirents that name the inode, and the data goes with the last.
+CREATE TABLE file_source.dirent (
+	PARENT_ID BIGINT NOT NULL,
+	NAME VARCHAR(250) NOT NULL,
+	INODE_ID BIGINT NOT NULL,
+	PRIMARY KEY (PARENT_ID, NAME)
+	)
+	;
+
+CREATE INDEX dirent_inode_idx ON file_source.dirent (INODE_ID)
+	;
+
+-- A symbolic link is an inode of type "link" whose target_path is the path it points to (it need not exist).
 CREATE TABLE file_source.file_link (
 	LINK_ID BIGINT NOT NULL PRIMARY KEY,
 	TARGET_ID BIGINT,
