@@ -27,6 +27,7 @@ package us.bringardner.parley.files.jdbcfile.pool;
 
 import java.util.ArrayList;
 import java.util.Iterator;
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
@@ -40,6 +41,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * @author: Tony Bringardner
  */
 abstract public class ObjectPool implements Runnable {
+
+	private static final System.Logger LOG = System.getLogger(ObjectPool.class.getName());
 
 	//  Class variable are used to initialize new objects
 	private static int defaultMin = 1;
@@ -110,23 +113,31 @@ abstract public class ObjectPool implements Runnable {
 
 	public void destroyAll(){
 
-		IManagedObject obj = null;
+		List<IManagedObject> all;
 
 		synchronized (pool) {
 			destroyGeneration++;
-
-			for(int i=0, sz=pool.size(); i<sz; i++ ) {
-				obj = (IManagedObject)pool.get(i);
-				if( !obj.isDestroyed()) {
-					try {
-						destroyObject(obj.getObject());
-						obj.setDestroyed();
-					} catch(Throwable ex) {}
-				}
-			}
+			all = new ArrayList<IManagedObject>(pool);
 			pool.clear();
 		}
 
+		//  Closing a connection is a call to the server and can take as long as a dead socket
+		//  takes to give up. Nobody who wants the lock on pool (a get, a release) waits for that.
+		for( IManagedObject obj : all ) {
+			if( !obj.isDestroyed() ) {
+				obj.setDestroyed();
+				destroyQuietly(obj);
+			}
+		}
+
+	}
+
+	private void destroyQuietly(IManagedObject obj) {
+		try {
+			destroyObject(obj.getObject());
+		} catch(Throwable ex) {
+			LOG.log(System.Logger.Level.DEBUG, getName()+": destroying an object failed", ex);
+		}
 	}
 
 	abstract public void destroyObject(Object obj) throws Exception;
@@ -262,11 +273,15 @@ abstract public class ObjectPool implements Runnable {
 		IManagedObject ret = null;
 		IManagedObject mo = null;
 		String message = "Nothing attempted";
-		long maxTime = System.currentTimeMillis()+timeToWait;
+		//  One clock read for a get that finds a free object at once (the common case): reading
+		//  the clock is a system call, and each get used to make several.
+		long now = System.currentTimeMillis();
+		long maxTime = now+timeToWait;
 
-		while( ret == null && System.currentTimeMillis()< maxTime ) {
+		while( ret == null && now < maxTime ) {
 			boolean create = false;
 			boolean reused = false;
+			List<IManagedObject> dead = null;
 			long idle = 0;
 			long generation;
 
@@ -279,9 +294,10 @@ abstract public class ObjectPool implements Runnable {
 						//  getInterval() ms) gets to it; a full pool of dead objects
 						//  would refuse new ones until then.
 						pool.remove(i--);
-						try {
-							destroyObject(mo.getObject());
-						} catch(Exception ex) {}
+						if( dead == null ) {
+							dead = new ArrayList<IManagedObject>();
+						}
+						dead.add(mo);
 					} else if( mo.getStatus() == IManagedObject.FREE ) {
 						ret = mo;
 						break;
@@ -289,7 +305,7 @@ abstract public class ObjectPool implements Runnable {
 				}
 
 				if( ret != null ) {
-					idle = System.currentTimeMillis()-ret.getStartTime();
+					idle = now-ret.getStartTime();
 					reused = true;
 					ret.setInUse();
 				} else if( pool.size()+creating < max ) {
@@ -298,8 +314,14 @@ abstract public class ObjectPool implements Runnable {
 					creating++;
 					create = true;
 				} else {
-					message = "Pool size("+(pool.size()+creating)+" is > max("+max+")";
+					message = "Pool size("+(pool.size()+creating)+") has reached max("+max+")";
 					waitForChange(maxTime);
+				}
+			}
+
+			if( dead != null ) {
+				for( IManagedObject d : dead ) {
+					destroyQuietly(d);
 				}
 			}
 
@@ -310,6 +332,7 @@ abstract public class ObjectPool implements Runnable {
 				discard(ret);
 				ret = null;
 				message = "The objects in the pool failed validation";
+				now = System.currentTimeMillis();
 				continue;
 			}
 
@@ -365,11 +388,15 @@ abstract public class ObjectPool implements Runnable {
 					}
 				}
 			}
+
+			if( ret == null ) {
+				now = System.currentTimeMillis();
+			}
 		}
 
 		if( ret == null ) {
-			if(debug|| pool.size()>=autoDebug){
-				System.out.println(getAllSource());
+			if(debug|| size()>=autoDebug){
+				LOG.log(System.Logger.Level.WARNING, getName()+": no object available\n"+getAllSource());
 			}
 			throw new ObjectCreateException(message);
 		}
@@ -520,14 +547,16 @@ abstract public class ObjectPool implements Runnable {
 	public boolean isRunAsDeamon() {
 		return runAsDeamon;
 	}
-	private void remove(Iterator<IManagedObject> it, IManagedObject obj)
+	/**
+	 * Take obj out of the pool and mark it destroyed, under the lock on pool. Closing it is left to
+	 * the caller, who does that after letting go of the lock.
+	 */
+	private void remove(Iterator<IManagedObject> it, IManagedObject obj, List<IManagedObject> victims)
 	{
 
 		it.remove();
 		obj.setDestroyed();
-		try {
-			destroyObject(obj.getObject());
-		} catch(Exception ex) {}
+		victims.add(obj);
 
 	}
 
@@ -546,6 +575,7 @@ abstract public class ObjectPool implements Runnable {
 			//  do work here
 			IManagedObject obj = null;
 			long now = System.currentTimeMillis();
+			List<IManagedObject> victims = new ArrayList<IManagedObject>();
 
 			synchronized (pool) {
 				final Iterator<IManagedObject> it = pool.iterator(); 
@@ -554,8 +584,7 @@ abstract public class ObjectPool implements Runnable {
 					try {
 						if( obj.isDestroyed() ) {
 							//  This object has been destroyed?  Get rid of it
-							remove(it,obj);
-							//System.out.println("removed destroyed object from pool");
+							remove(it,obj,victims);
 						} else 	if( obj.isFree() ) {
 							/*
 							The Object is free.
@@ -566,21 +595,25 @@ abstract public class ObjectPool implements Runnable {
 							 */
 							if( obj.reachedTTL(maxTTL,now) ||
 									(pool.size() > min && obj.hasExpired(expire,now))) {
-								System.out.println("removed maxTTL object from pool min="+min+" size="+pool.size());
-								remove(it,obj);
+								remove(it,obj,victims);
 							}
 						} else if(obj.reachedInUseIdleTime(inUseIdleTime,now) ) {
 							//  If it's in use but has not been accessed 
 							//	for more than inUseIdleTime then get rid of it
 							//  
-							remove(it,obj);
-							//System.out.println("removed InUseIdle object from pool");							
+							remove(it,obj,victims);
 						}
 					} catch(Exception ex) {
-						System.err.println("Un expected error in "+getName()+" run");
-						ex.printStackTrace(System.err);
+						LOG.log(System.Logger.Level.ERROR, "Unexpected error in "+getName()+" run", ex);
 					}
 				}
+			}
+
+			for( IManagedObject v : victims ) {
+				destroyQuietly(v);
+			}
+			if( !victims.isEmpty() ) {
+				LOG.log(System.Logger.Level.DEBUG, "{0}: removed {1} object(s) from the pool", getName(), victims.size());
 			}
 
 			if( running ) {
@@ -749,7 +782,9 @@ abstract public class ObjectPool implements Runnable {
 	}
 	final public int  size()
 	{
-		return pool.size();
+		synchronized (pool) {
+			return pool.size();
+		}
 	}
 	public synchronized void start()
 	{
@@ -844,9 +879,13 @@ abstract public class ObjectPool implements Runnable {
 
 	public String getAllSource() {
 		StringBuffer ret = new StringBuffer();
+		List<IManagedObject> snapshot;
+		synchronized (pool) {
+			snapshot = new ArrayList<IManagedObject>(pool);
+		}
 
-		for(int i=0, sz=pool.size(); i< sz; i++ ) {
-			IManagedObject mo = (IManagedObject)pool.get(i);
+		for(int i=0, sz=snapshot.size(); i< sz; i++ ) {
+			IManagedObject mo = snapshot.get(i);
 			ret.append("item "+i+" is ");
 			switch(mo.getStatus()) {
 			case IManagedObject.FREE: ret.append("Free"); break; 

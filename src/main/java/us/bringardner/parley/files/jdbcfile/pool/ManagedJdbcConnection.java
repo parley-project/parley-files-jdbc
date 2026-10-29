@@ -117,6 +117,9 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	/** The handle that has it checked out now (see PooledConnection); null when nobody has. */
 	private volatile Object owner;
 
+	private static final java.util.concurrent.atomic.AtomicReferenceFieldUpdater<ManagedJdbcConnection, Object> OWNER =
+			java.util.concurrent.atomic.AtomicReferenceFieldUpdater.newUpdater(ManagedJdbcConnection.class, Object.class, "owner");
+
 	Object getOwner() {
 		return owner;
 	}
@@ -125,17 +128,22 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 		owner = handle;
 	}
 
+	/** Whoever has it checked out loses it: its handle is dead from now on. */
+	@Override
+	public void setDestroyed() {
+		owner = null;
+		super.setDestroyed();
+	}
+
 	/**
 	 * The handle gives the connection back. Only the handle that has it can: a second close, or one
 	 * after the pool took it back, does nothing and so cannot free a connection that someone else
 	 * has by now.
 	 */
-	synchronized void returnFrom(Object handle) {
-		if( owner != handle ) {
-			return;
-		}
-		owner = null;
-		if( !isDestroyed() ) {
+	void returnFrom(Object handle) {
+		//  Whoever clears the owner does the return, so a second close (or one racing the pool
+		//  taking the connection back) finds nothing to do, without a lock.
+		if( OWNER.compareAndSet(this, handle, null) && !isDestroyed() ) {
 			close();
 		}
 	}
@@ -188,19 +196,17 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 		boolean broken = false;
 		if( dirty ) {
 			try { con.rollback(); } catch(Exception ex) { broken = true; }
+			dirty = false;
 		}
-		dirty = false;
 		try { con.clearWarnings(); } catch(Exception ex) { broken = true; }
 		// (only what the borrower changed: each of these is a statement to the server, three for
 		// every use of a pooled connection, most of all the statements a file system sends)
-		if( autoCommitSet ) { try { con.setAutoCommit(autoCommit); } catch(Exception ex) { broken = true; } }
-		autoCommitNow = autoCommit;
-		if( isolationSet ) { try { con.setTransactionIsolation(isolation); } catch(Exception ex) { broken = true; } }
-		if( readOnlySet ) { try { con.setReadOnly(readOnly); } catch(Exception ex) { broken = true; } }
-		if( catalogSet ) { try { con.setCatalog(catalog); } catch(Exception ex) { broken = true; } }
-		if( schemaSet ) { try { con.setSchema(schema); } catch(Exception ex) { broken = true; } }
-		autoCommitSet = isolationSet = readOnlySet = catalogSet = schemaSet = false;
-		touch();
+		//  (and the flags are written only when they were set: a write to a volatile is not free)
+		if( autoCommitSet ) { try { con.setAutoCommit(autoCommit); } catch(Exception ex) { broken = true; } autoCommitSet = false; autoCommitNow = autoCommit; }
+		if( isolationSet ) { try { con.setTransactionIsolation(isolation); } catch(Exception ex) { broken = true; } isolationSet = false; }
+		if( readOnlySet ) { try { con.setReadOnly(readOnly); } catch(Exception ex) { broken = true; } readOnlySet = false; }
+		if( catalogSet ) { try { con.setCatalog(catalog); } catch(Exception ex) { broken = true; } catalogSet = false; }
+		if( schemaSet ) { try { con.setSchema(schema); } catch(Exception ex) { broken = true; } schemaSet = false; }
 		if( broken ) {
 			discard();
 		} else {

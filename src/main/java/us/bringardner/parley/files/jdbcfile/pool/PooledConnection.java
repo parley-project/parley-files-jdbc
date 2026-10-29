@@ -34,7 +34,9 @@ final class PooledConnection implements Connection {
 
 	private static final String SQL_STATE_CLOSED = "08003";
 
-	private volatile ManagedJdbcConnection target;
+	//  Whether this handle still has the connection is kept in the connection, in one field (its
+	//  owner): the borrower's close() clears it, and so does the pool when it takes the connection back.
+	private final ManagedJdbcConnection target;
 
 	PooledConnection(ManagedJdbcConnection target) {
 		this.target = target;
@@ -43,12 +45,10 @@ final class PooledConnection implements Connection {
 
 	private ManagedJdbcConnection live() throws SQLException {
 		ManagedJdbcConnection t = target;
-		if( t == null ) {
-			throw new SQLNonTransientConnectionException("The connection is closed", SQL_STATE_CLOSED);
-		}
-		if( t.getOwner() != this || t.isDestroyed() ) {
+		if( t.getOwner() != this ) {
 			throw new SQLNonTransientConnectionException(
-					"The pool closed this connection (it was in use but not touched for too long)", SQL_STATE_CLOSED);
+					"The connection is closed (by its borrower, or by the pool after it was in use but not touched for too long)",
+					SQL_STATE_CLOSED);
 		}
 		return t;
 	}
@@ -64,17 +64,13 @@ final class PooledConnection implements Connection {
 	/** Give the connection back. Does nothing the second time. */
 	@Override
 	public void close() throws SQLException {
-		ManagedJdbcConnection t = target;
-		if( t != null ) {
-			target = null;
-			t.returnFrom(this);
-		}
+		target.returnFrom(this);
 	}
 
 	@Override
 	public boolean isClosed() throws SQLException {
 		ManagedJdbcConnection t = target;
-		return t == null || t.getOwner() != this || t.isDestroyed() || t.isClosed();
+		return t.getOwner() != this || t.isClosed();
 	}
 
 	public void clearWarnings() throws SQLException {

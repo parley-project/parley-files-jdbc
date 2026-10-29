@@ -34,13 +34,13 @@ public class ManagedObjectImp implements IManagedObject
 {
 
 	private Object object;
-	private long startTime;
+	private volatile long startTime;
 	private volatile int status;
 	private ObjectPool pool;
 	private long createTime;
 	private volatile long lastAccess;  // written by the borrower, read by the pool's thread
-	private StackTraceElement [] source;
-	private boolean captureSource = false;
+	private volatile StackTraceElement [] source;
+	private volatile boolean captureSource = false;
 
 	public ManagedObjectImp (Object obj)
 	{

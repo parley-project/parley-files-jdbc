@@ -28,8 +28,10 @@ package us.bringardner.parley.files.jdbcfile.pool;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.SQLException;
-import java.util.Hashtable;
+import java.util.Collections;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 
 /**
@@ -39,7 +41,9 @@ import java.util.Map;
  */
 public class JdbcConnectionPool extends ObjectPool 
 {
-	private static Map<String, JdbcConnectionPool> pools = new Hashtable<String, JdbcConnectionPool>();
+	//  Looked up for every connection a caller asks for by url, so no lock on the class: closing a
+	//  pool (it closes connections, which can hang) must not hold up everyone else's lookup.
+	private static volatile Map<String, JdbcConnectionPool> pools = new ConcurrentHashMap<String, JdbcConnectionPool>();
 
 	private String url;
 	private String userid;
@@ -156,7 +160,7 @@ static public Connection getConnection(String driver, String url, String userid,
 	
 }
 
-public static synchronized  JdbcConnectionPool getConnectionPool(String url, String userid, String passwd)
+public static JdbcConnectionPool getConnectionPool(String url, String userid, String passwd)
 	throws SQLException
 {
 	
@@ -208,7 +212,7 @@ private static String key(String url, String userid, String passwd) {
  * Stops and forgets the pool for url, userid and passwd, so the next getConnectionPool makes
  * a new one. A pool whose login failed must not be reused.
  */
-public static synchronized void removeConnectionPool(String url, String userid, String passwd) {
+public static void removeConnectionPool(String url, String userid, String passwd) {
 	JdbcConnectionPool p = pools.remove(key(url, userid, passwd));
 	if( p != null ) {
 		try {
@@ -246,11 +250,12 @@ public java.lang.String getUserid() {
  * @param newPools java.util.Hashtable
  */
 public static void setPools(Map<String, JdbcConnectionPool> newPools) {
-	pools = newPools;
+	//  looked up from any thread: a map that is not concurrent is wrapped
+	pools = (newPools instanceof ConcurrentMap) ? newPools : Collections.synchronizedMap(newPools);
 }
 
 
-public static synchronized  JdbcConnectionPool getConnectionPool(String driver,String url, String userid, String passwd)
+public static JdbcConnectionPool getConnectionPool(String driver,String url, String userid, String passwd)
 	throws SQLException,ClassNotFoundException
 {
 	Class.forName(driver);
@@ -259,7 +264,7 @@ public static synchronized  JdbcConnectionPool getConnectionPool(String driver,S
 	
 }
 
-public static synchronized  JdbcConnectionPool getConnectionPool(String driver,String url, String userid, String passwd, boolean create)
+public static JdbcConnectionPool getConnectionPool(String driver,String url, String userid, String passwd, boolean create)
 	throws SQLException,ClassNotFoundException
 {
 	Class.forName(driver);
@@ -270,22 +275,22 @@ public static synchronized  JdbcConnectionPool getConnectionPool(String driver,S
 	
 }
 
-public static synchronized  JdbcConnectionPool getConnectionPool(String url, String userid, String passwd, boolean create)
+public static JdbcConnectionPool getConnectionPool(String url, String userid, String passwd, boolean create)
 	throws SQLException
 {
 	
 	String key = key(url, userid, passwd);
 
-	JdbcConnectionPool p = null;
+	Map<String, JdbcConnectionPool> map = pools;
+	JdbcConnectionPool p = map.get(key);
 
-	if( (p=(JdbcConnectionPool)pools.get(key)) == null ) {
-		if( create ) {
-			p = new JdbcConnectionPool(url,userid,passwd);
-			pools.put(key,p);
-			p.setDeamon(true);
-			p.start();
-		}
-		
+	if( p == null && create ) {
+		//  atomic: two threads asking at once get the same pool, and only one thread is started
+		p = map.computeIfAbsent(key, k -> {
+			JdbcConnectionPool made = new JdbcConnectionPool(url,userid,passwd);
+			made.start();
+			return made;
+		});
 	}
 	
 	return p;	
