@@ -666,101 +666,6 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 		return false;
 	}
 
-	public static final String DIRENT_TABLE_SQL = "CREATE TABLE file_source.dirent ("
-			+ "PARENT_ID BIGINT NOT NULL, NAME VARCHAR(250) NOT NULL, INODE_ID BIGINT NOT NULL, PRIMARY KEY (PARENT_ID, NAME))";
-	public static final String DIRENT_INDEX_SQL = "CREATE INDEX dirent_inode_idx ON file_source.dirent (INODE_ID)";
-
-	/**
-	 * Moves a database made before names were separate from files to the inode model: every row of
-	 * file_source.file keeps its id as an inode and its name (name and parentid) becomes a row of
-	 * file_source.dirent; a hard link row becomes one more dirent for the inode it pointed at, and
-	 * file.link_count becomes the number of names (it counted the hard links). Then file.name and
-	 * file.parentid, and the unique key on them, are dropped. Runs on connect unless jdbcUpgradeSchema is
-	 * "false". Never fails the connection: problems are logged, and the README has the statements to run
-	 * by hand. The copy is one transaction; it is not made again if it was made and only dropping the
-	 * columns failed.
-	 *
-	 * @return what was done (the table, the copy, the columns dropped)
-	 */
-	public List<String> migrateToDirents(Connection con) {
-		List<String> ret = new ArrayList<>();
-		try {
-			DatabaseMetaData md = con.getMetaData();
-			boolean legacy = columnSize(md, "name") >= 0;
-			if( !tableExists(md, "dirent") ) {
-				try(Statement st = con.createStatement()) {
-					st.executeUpdate(DIRENT_TABLE_SQL);
-					st.executeUpdate(DIRENT_INDEX_SQL);
-				}
-				if( !con.getAutoCommit()) {
-					con.commit();
-				}
-				ret.add("dirent");
-			}
-			if( !legacy ) {
-				return ret;
-			}
-			boolean auto = con.getAutoCommit();
-			try {
-				con.setAutoCommit(false);
-				long names;
-				try(Statement st = con.createStatement(); ResultSet rs = st.executeQuery("SELECT count(*) FROM file_source.dirent")) {
-					names = rs.next() ? rs.getLong(1) : 0;
-				}
-				if( names == 0 ) {
-					try(Statement st = con.createStatement()) {
-						st.executeUpdate("INSERT INTO file_source.dirent (parent_id, name, inode_id) "
-								+ "SELECT parentid, name, fileid FROM file_source.file WHERE file_type <> 'hard'");
-						st.executeUpdate("INSERT INTO file_source.dirent (parent_id, name, inode_id) "
-								+ "SELECT h.parentid, h.name, l.target_id FROM file_source.file h "
-								+ "JOIN file_source.file_link l ON l.link_id = h.fileid "
-								+ "JOIN file_source.file o ON o.fileid = l.target_id "
-								+ "WHERE h.file_type = 'hard' AND l.target_id IS NOT NULL");
-						// link_count was the hard links; it is now the names, and a file has at least one
-						st.executeUpdate("UPDATE file_source.file SET link_count = link_count + 1");
-						st.executeUpdate("DELETE FROM file_source.file_link WHERE link_id IN "
-								+ "(SELECT fileid FROM file_source.file WHERE file_type = 'hard')");
-						st.executeUpdate("DELETE FROM file_source.file_data WHERE fileid IN "
-								+ "(SELECT fileid FROM file_source.file WHERE file_type = 'hard')");
-						st.executeUpdate("DELETE FROM file_source.file WHERE file_type = 'hard'");
-					}
-					con.commit();
-					ret.add("copy");
-				} else {
-					con.rollback();
-				}
-			} catch (SQLException | RuntimeException e) {
-				con.rollback();
-				throw e;
-			} finally {
-				con.setAutoCommit(auto);
-			}
-			try(Statement st = con.createStatement()) {
-				for(String sql : dropNameColumnsSql(md.getDatabaseProductName())) {
-					st.executeUpdate(sql);
-				}
-			}
-			if( !con.getAutoCommit()) {
-				con.commit();
-			}
-			ret.add("drop name, parentid");
-			logInfo("Moved the names of file_source.file to file_source.dirent: "+ret);
-		} catch (SQLException | RuntimeException e) {
-			logWarn("Can't move the names to file_source.dirent (see README, Upgrading an existing database): "+e);
-		}
-		return ret;
-	}
-
-	/** The statements that drop file.name and file.parentid, and the unique key on them, for the given database product. */
-	public static List<String> dropNameColumnsSql(String product) {
-		String p = product == null ? "" : product.toLowerCase(Locale.ROOT);
-		String table = "ALTER TABLE file_source.file ";
-		if( p.contains("mysql") || p.contains("mariadb") || p.contains("postgres")) {
-			return Arrays.asList(table+"DROP COLUMN name, DROP COLUMN parentid");
-		}
-		return Arrays.asList(table+"DROP COLUMN name CASCADE", table+"DROP COLUMN parentid CASCADE");
-	}
-
 	/** Whether opening a file for reading writes its access time (see {@link #JDBC_ACCESS_TIME}); read at connect. */
 	private volatile boolean updateAccessTime = true;
 
@@ -825,7 +730,6 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 						widenNameColumns(con);
 						reorderDataKey(con);
 						addLinkSchema(con);
-						migrateToDirents(con);
 					}
 					lockDialect = setUpLocks(con, upgrade);
 				}

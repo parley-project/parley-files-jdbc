@@ -267,28 +267,3 @@ once while it runs. To do it yourself:
 | HSQLDB, SQL:2003 | `ALTER TABLE file_source.file_data DROP PRIMARY KEY;`<br>`ALTER TABLE file_source.file_data ADD PRIMARY KEY (fileid, chunk_number);` |
 | PostgreSQL | `ALTER TABLE file_source.file_data DROP CONSTRAINT "file_data_pkey", ADD PRIMARY KEY (fileid, chunk_number);` |
 | MySQL | `ALTER TABLE file_source.file_data DROP PRIMARY KEY, ADD PRIMARY KEY (fileid, chunk_number);` |
-
-The names and links (see Links) are moved when the factory connects (the same `jdbcUpgradeSchema` setting
-applies, and it is logged): `file_source.dirent` is made, every row of `file` gets a name in it, each old `hard`
-row becomes one more name for the inode it pointed at (and is removed), `file.link_count` becomes the number of
-names, and `file.name` and `file.parentid` (and the unique key on them) are dropped. The copy is one transaction;
-a store with many rows waits once while it runs. New schemas made from the `.ddl` files have all of this. A
-database that already holds links made by an earlier version, which kept their target in the first chunk of the
-row's data, is not converted: delete those links and make them again. To do it yourself, on any of the databases:
-
-```sql
-ALTER TABLE file_source.file ADD COLUMN link_count INT DEFAULT 0 NOT NULL;   -- only if it is missing
-CREATE TABLE file_source.file_link (LINK_ID BIGINT NOT NULL PRIMARY KEY, TARGET_ID BIGINT, TARGET_PATH VARCHAR(4096));   -- only if it is missing
-CREATE TABLE file_source.dirent (PARENT_ID BIGINT NOT NULL, NAME VARCHAR(250) NOT NULL, INODE_ID BIGINT NOT NULL, PRIMARY KEY (PARENT_ID, NAME));
-CREATE INDEX dirent_inode_idx ON file_source.dirent (INODE_ID);
-INSERT INTO file_source.dirent (parent_id, name, inode_id) SELECT parentid, name, fileid FROM file_source.file WHERE file_type <> 'hard';
-INSERT INTO file_source.dirent (parent_id, name, inode_id) SELECT h.parentid, h.name, l.target_id FROM file_source.file h JOIN file_source.file_link l ON l.link_id = h.fileid WHERE h.file_type = 'hard' AND l.target_id IS NOT NULL;
-UPDATE file_source.file SET link_count = link_count + 1;
-DELETE FROM file_source.file_link WHERE link_id IN (SELECT fileid FROM file_source.file WHERE file_type = 'hard');
-DELETE FROM file_source.file_data WHERE fileid IN (SELECT fileid FROM file_source.file WHERE file_type = 'hard');
-DELETE FROM file_source.file WHERE file_type = 'hard';
-```
-
-and then drop the old columns: on PostgreSQL and MySQL `ALTER TABLE file_source.file DROP COLUMN name, DROP COLUMN parentid;`, on
-HSQLDB and SQL:2003 `ALTER TABLE file_source.file DROP COLUMN name CASCADE;` and the same for `parentid`. Take a
-backup first, and run the `UPDATE` only once.

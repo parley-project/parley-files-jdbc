@@ -11,10 +11,8 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.sql.Statement;
 import java.util.List;
 
@@ -28,8 +26,7 @@ import us.bringardner.parley.files.jdbcfile.JdbcFileSourceFactory;
 /**
  * Where names and links are kept: every name is a row of file_source.dirent that points at an inode (a
  * row of file), a hard link is a second name for the same inode, file.link_count counts the names, the
- * data goes with the last one, and file_link holds the path of a symbolic link. Also the move of a
- * database made before names were separate.
+ * data goes with the last one, and file_link holds the path of a symbolic link.
  */
 public class JdbcLinkTableTest {
 
@@ -340,72 +337,12 @@ public class JdbcLinkTableTest {
 			assertEquals(List.of("file.link_count", "file_link"), made);
 			assertEquals(List.of(), f.addLinkSchema(con), "nothing left to make");
 			try (Statement st = con.createStatement()) {
-				st.executeUpdate("UPDATE file_source.file SET link_count = 1");   // (as migrateToDirents does for a database of the old model)
+				st.executeUpdate("UPDATE file_source.file SET link_count = 1");   // (the column is made with 0 for rows that were there)
 			}
 		}
 		write("/links/up.txt", "x");
 		factory().createLink(at("/links/up-a"), at("/links/up.txt"));
 		assertEquals(2, linkCount("/links/up.txt"));
 		assertEquals(id("/links/up.txt"), id("/links/up-a"));
-	}
-
-	/** A database of the old model: names in file, and a hard link a row of type "hard" pointing at its owner. */
-	@Test
-	public void aDatabaseOfTheOldModelIsMovedToDirents() throws Exception {
-		try (Connection con = DriverManager.getConnection("jdbc:hsqldb:mem:oldmodel", "SA", ""); Statement st = con.createStatement()) {
-			st.executeUpdate("create schema file_source");
-			st.executeUpdate("CREATE TABLE file_source.file (FILEID BIGINT NOT NULL UNIQUE generated always as IDENTITY (START WITH 1), "
-					+ "PARENTID BIGINT DEFAULT 0, NAME VARCHAR(250) NOT NULL, OWNER VARCHAR(128) NOT NULL, FILE_TYPE VARCHAR(10) NOT NULL, "
-					+ "LENGTH BIGINT DEFAULT 0, CHUNK_COUNT INT DEFAULT 0, LINK_COUNT INT DEFAULT 0 NOT NULL, UNIQUE (PARENTID, NAME))");
-			st.executeUpdate("CREATE TABLE file_source.file_link (LINK_ID BIGINT NOT NULL PRIMARY KEY, TARGET_ID BIGINT, TARGET_PATH VARCHAR(4096))");
-			st.executeUpdate("CREATE TABLE file_source.file_data (CHUNK_NUMBER BIGINT NOT NULL, FILEID BIGINT NOT NULL, LENGTH INT NOT NULL, "
-					+ "DATA LONGVARBINARY, primary key (fileid, chunk_number))");
-			// 1 root, 2 /a (dir), 3 /a/f (file with two hard links), 4 /a/h1 and 5 /b (the hard links), 6 /a/s (symbolic link)
-			st.executeUpdate("insert into file_source.file (name,parentid,owner,file_type,link_count) values('',0,'u','dir',0)");
-			st.executeUpdate("insert into file_source.file (name,parentid,owner,file_type,link_count) values('a',1,'u','dir',0)");
-			st.executeUpdate("insert into file_source.file (name,parentid,owner,file_type,link_count) values('f',2,'u','file',2)");
-			st.executeUpdate("insert into file_source.file (name,parentid,owner,file_type,link_count) values('h1',2,'u','hard',0)");
-			st.executeUpdate("insert into file_source.file (name,parentid,owner,file_type,link_count) values('b',1,'u','hard',0)");
-			st.executeUpdate("insert into file_source.file (name,parentid,owner,file_type,link_count) values('s',2,'u','link',0)");
-			st.executeUpdate("insert into file_source.file_link values (4, 3, null)");
-			st.executeUpdate("insert into file_source.file_link values (5, 3, null)");
-			st.executeUpdate("insert into file_source.file_link values (6, null, '/a/f')");
-			st.executeUpdate("insert into file_source.file_data values (1, 3, 3, X'010203')");
-			st.executeUpdate("insert into file_source.file_data values (1, 4, 1, X'03')");
-
-			List<String> done = factory().migrateToDirents(con);
-			assertEquals(List.of("dirent", "copy", "drop name, parentid"), done);
-
-			// the names: 1 root, a, f and its two hard links, s
-			StringBuilder all = new StringBuilder();
-			try (ResultSet rs = st.executeQuery("select parent_id, name, inode_id from file_source.dirent order by 1, 2")) {
-				while (rs.next()) {
-					all.append(rs.getLong(1)).append('/').append(rs.getString(2)).append("->").append(rs.getLong(3)).append(' ');
-				}
-			}
-			assertEquals(6, count(con, "select count(*) from file_source.dirent"), all.toString());
-			assertEquals(3, count(con, "select count(*) from file_source.dirent where inode_id = 3"));
-			assertEquals(3, count(con, "select inode_id from file_source.dirent where parent_id = 2 and name = 'h1'"));
-			assertEquals(3, count(con, "select inode_id from file_source.dirent where parent_id = 1 and name = 'b'"));
-			// the hard link rows are gone with their pointer data and entries, the count is the names
-			assertEquals(4, count(con, "select count(*) from file_source.file"));
-			assertEquals(3, count(con, "select link_count from file_source.file where fileid = 3"));
-			assertEquals(1, count(con, "select link_count from file_source.file where fileid = 2"));
-			assertEquals(1, count(con, "select count(*) from file_source.file_data"));
-			assertEquals(1, count(con, "select count(*) from file_source.file_link"));
-			// the columns are gone
-			assertThrows(SQLException.class, () -> st.executeQuery("select name from file_source.file"));
-			assertThrows(SQLException.class, () -> st.executeQuery("select parentid from file_source.file"));
-			// and it is done once
-			assertEquals(List.of(), factory().migrateToDirents(con));
-			assertEquals(6, count(con, "select count(*) from file_source.dirent"));
-		}
-	}
-
-	private static long count(Connection con, String sql) throws SQLException {
-		try (Statement st = con.createStatement(); ResultSet rs = st.executeQuery(sql)) {
-			assertTrue(rs.next(), sql);
-			return rs.getLong(1);
-		}
 	}
 }
