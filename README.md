@@ -243,3 +243,16 @@ it yourself, on any of the databases:
 ```sql
 CREATE INDEX file_type_idx ON file_source.file (file_type);
 ```
+
+Links are kept in a table of their own, `file_source.file_link`, and `file_source.file.link_count` counts the
+hard links that point at a row. A hard link has the id of the row that holds the data in `target_id`, and a
+symbolic link has the path it points to in `target_path` (the path need not exist). Both are made when the
+factory connects (the same `jdbcUpgradeSchema` setting applies, and it is logged), and new schemas made from the
+`.ddl` files have them. A database that already holds links made by an earlier version is not converted: delete
+those links and make them again. To make them yourself, on any of the databases:
+
+```sql
+ALTER TABLE file_source.file ADD COLUMN link_count INT DEFAULT 0 NOT NULL;
+CREATE TABLE file_source.file_link (LINK_ID BIGINT NOT NULL PRIMARY KEY, TARGET_ID BIGINT, TARGET_PATH VARCHAR(4096));
+CREATE INDEX file_link_target_idx ON file_source.file_link (target_id);
+```

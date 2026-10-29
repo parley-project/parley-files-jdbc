@@ -23,6 +23,7 @@ CREATE TABLE file_source.file (
 	OTHER_EXECUTABLE BOOLEAN DEFAULT false,
 	FILE_TYPE VARCHAR(10) NOT NULL ,
 	DATA LONGVARBINARY,
+	LINK_COUNT INT DEFAULT 0 NOT NULL ,
 	UNIQUE  (PARENTID,NAME)
 	) 
 	;
@@ -30,6 +31,19 @@ CREATE TABLE file_source.file (
 
 -- every check that links exist (file_type link or hard) reads the whole table without it
 CREATE INDEX file_type_idx ON file_source.file (file_type)
+	;
+
+-- Links. A hard link is a row of type "hard" whose target_id is the row that holds the data.
+-- A symbolic link is a row of type "link" whose target_path is the path it points to (it need not exist).
+-- file.link_count is the number of hard links that point at a row, so a file with none costs no lookup.
+CREATE TABLE file_source.file_link (
+	LINK_ID BIGINT NOT NULL PRIMARY KEY,
+	TARGET_ID BIGINT,
+	TARGET_PATH VARCHAR(4096)
+	)
+	;
+
+CREATE INDEX file_link_target_idx ON file_source.file_link (target_id)
 	;
 -- File locks (FileSource.lock), used by PostgreSQL, MySQL 8 and MariaDB 10.3+, and created on
 -- connect if missing. file_lock: one row per locked file, row-locked briefly while a lock is taken.

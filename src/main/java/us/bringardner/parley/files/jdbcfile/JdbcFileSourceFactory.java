@@ -659,6 +659,63 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 		return false;
 	}
 
+	/**
+	 * Makes what links are kept in when it is missing: the column file.link_count (how many hard links
+	 * point at a row) and the table file_link (a hard link's target row, a symbolic link's target path),
+	 * with an index on its target. Runs on connect unless jdbcUpgradeSchema is "false". Never fails the
+	 * connection: problems (e.g. no rights to alter a table) are logged, and the README has the
+	 * statements to run by hand. A database that already holds links made by an older version is not
+	 * converted.
+	 *
+	 * @return what was made (the column, the table)
+	 */
+	public List<String> addLinkSchema(Connection con) {
+		List<String> ret = new ArrayList<>();
+		try {
+			DatabaseMetaData md = con.getMetaData();
+			try(Statement st = con.createStatement()) {
+				if( columnSize(md, "link_count") < 0 ) {
+					st.executeUpdate("ALTER TABLE file_source.file ADD COLUMN link_count INT DEFAULT 0 NOT NULL");
+					ret.add("file.link_count");
+				}
+				if( !linkTableExists(md) ) {
+					st.executeUpdate(FILE_LINK_TABLE_SQL);
+					st.executeUpdate(FILE_LINK_INDEX_SQL);
+					ret.add("file_link");
+				}
+			}
+			if( !con.getAutoCommit()) {
+				con.commit();
+			}
+			if( !ret.isEmpty() ) {
+				logInfo("Made what links are kept in: "+ret);
+			}
+		} catch (SQLException | RuntimeException e) {
+			logWarn("Can't make file.link_count and file_link (see README, Upgrading an existing database): "+e);
+		}
+		return ret;
+	}
+
+	public static final String FILE_LINK_TABLE_SQL = "CREATE TABLE file_source.file_link ("
+			+ "LINK_ID BIGINT NOT NULL PRIMARY KEY, TARGET_ID BIGINT, TARGET_PATH VARCHAR(4096))";
+	public static final String FILE_LINK_INDEX_SQL = "CREATE INDEX file_link_target_idx ON file_source.file_link (target_id)";
+
+	private static boolean linkTableExists(DatabaseMetaData md) throws SQLException {
+		// identifier case and "schema" differ, as for columnSize()
+		String[][] tries = {
+				{null, "FILE_SOURCE", "FILE_LINK"},
+				{null, "file_source", "file_link"},
+				{"file_source", null, "file_link"}};
+		for(String[] t : tries) {
+			try(ResultSet rs = md.getTables(t[0], t[1], t[2], null)) {
+				if( rs.next()) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
 	/** The pool's thread starts at once; this only keeps a failure from waiting forever. */
 	private static final long POOL_START_WAIT_MS = 30_000;
 
@@ -715,6 +772,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 						widenNameColumns(con);
 						reorderDataKey(con);
 						addFileTypeIndex(con);
+						addLinkSchema(con);
 					}
 					lockDialect = setUpLocks(con, upgrade);
 				}

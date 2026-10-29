@@ -25,6 +25,7 @@ CREATE TABLE file_source.file (
 	FILE_TYPE VARCHAR(10) NOT NULL ,
 	LENGTH BIGINT DEFAULT 0 ,
 	CHUNK_COUNT INT DEFAULT 0 ,
+	LINK_COUNT INT DEFAULT 0 NOT NULL ,
 	UNIQUE  (PARENTID,NAME)
 	) 
 	;
@@ -34,6 +35,19 @@ CREATE TABLE file_source.file (
 
 -- every check that links exist (file_type link or hard) reads the whole table without it
 CREATE INDEX file_type_idx ON file_source.file (file_type)
+	;
+
+-- Links. A hard link is a row of type "hard" whose target_id is the row that holds the data.
+-- A symbolic link is a row of type "link" whose target_path is the path it points to (it need not exist).
+-- file.link_count is the number of hard links that point at a row, so a file with none costs no lookup.
+CREATE TABLE file_source.file_link (
+	LINK_ID BIGINT NOT NULL PRIMARY KEY,
+	TARGET_ID BIGINT,
+	TARGET_PATH VARCHAR(4096)
+	)
+	;
+
+CREATE INDEX file_link_target_idx ON file_source.file_link (target_id)
 	;
 CREATE TABLE file_source.file_data (
 	CHUNK_NUMBER BIGINT NOT NULL,

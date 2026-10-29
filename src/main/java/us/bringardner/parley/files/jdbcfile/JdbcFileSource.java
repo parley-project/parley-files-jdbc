@@ -375,7 +375,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			}
 			boolean moved = !link && FILE.equals(type) && passContentToAHardLink();
 			long id = fileid;
-			if( deleteRows(id, !moved) ) {
+			if( deleteRows(id, !moved, type) ) {
 				if( link || !FILE.equals(type) || moved ) {
 					changedStructure();
 				}
@@ -396,7 +396,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	 * in one transaction: one commit, and a failure leaves no content rows without their file.
 	 * @return true if the row was there to delete
 	 */
-	private boolean deleteRows(long id, boolean withContent) throws IOException {
+	private boolean deleteRows(long id, boolean withContent, String type) throws IOException {
 		Long parentId = null;
 		if( parent != null && parent.rowExists() ) {
 			parentId = parent.fileid;
@@ -411,6 +411,31 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 						deleted = pstmt.executeUpdate() == 1;
 					}
 					if( deleted ) {
+						if( isLinkType(type) ) {
+							// the owner of a hard link counts it; the link's own entry goes with it
+							if( HARD.equals(type) ) {
+								long owner = -1;
+								try(PreparedStatement pstmt = con.prepareStatement("select target_id from file_source.file_link where link_id = ?")) {
+									pstmt.setLong(1, id);
+									try(ResultSet rs = pstmt.executeQuery()) {
+										if( rs.next() && rs.getObject(1) != null ) {
+											owner = rs.getLong(1);
+										}
+									}
+								}
+								if( owner >= 0 ) {
+									try(PreparedStatement pstmt = con.prepareStatement(
+											"update file_source.file set link_count = link_count - 1 where fileid = ? and link_count > 0")) {
+										pstmt.setLong(1, owner);
+										pstmt.executeUpdate();
+									}
+								}
+							}
+							try(PreparedStatement pstmt = con.prepareStatement("delete from file_source.file_link where link_id = ?")) {
+								pstmt.setLong(1, id);
+								pstmt.executeUpdate();
+							}
+						}
 						if( withContent ) {
 							try(PreparedStatement pstmt = con.prepareStatement("delete from file_source.file_data where fileid=?")) {
 								pstmt.setLong(1, id);
@@ -822,42 +847,150 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		if( parent == null || !parent.isDirectory() ) {
 			throw new java.nio.file.NoSuchFileException(getAbsolutePath());
 		}
+		long ownerId = -1;
+		String path = null;
 		String content;
 		if( hard ) {
 			JdbcFileSource owner = existing.resolve();   // a link to a link is a link to the file
 			if( !owner.isFile() ) {
 				throw new java.nio.file.NoSuchFileException(existing.getAbsolutePath());
 			}
-			content = Long.toString(owner.rowId());
+			ownerId = owner.rowId();
+			content = Long.toString(ownerId);
 		} else {
-			content = existing.getAbsolutePath();
+			path = existing.getAbsolutePath();
+			content = path;
 		}
 		factory.linksMade();
 		forgetResolution();
-		if( !executeInsert(hard ? HARD : LINK) || !rowExists() ) {
+		if( !insertLinkRows(hard, ownerId, path, content) || !rowExists() ) {
 			throw new IOException("Can't create the link " + getAbsolutePath());
-		}
-		byte[] bytes = content.getBytes(java.nio.charset.StandardCharsets.UTF_8);
-		try(Connection con = factory.getConnection()) {
-			try(PreparedStatement pstmt = con.prepareStatement(
-					"insert into file_source.file_data (chunk_number,fileid,length,data) values(1,?,?,?)")) {
-				pstmt.setLong(1, fileid);
-				pstmt.setInt(2, bytes.length);
-				pstmt.setBytes(3, bytes);
-				pstmt.executeUpdate();
-			}
-			try(PreparedStatement pstmt = con.prepareStatement(
-					"update file_source.file set chunk_count = 1, length = ? where fileid = ?")) {
-				pstmt.setLong(1, bytes.length);
-				pstmt.setLong(2, fileid);
-				pstmt.executeUpdate();
-			}
-		} catch (SQLException e) {
-			throw new IOException(e);
 		}
 		fieldCache.clear();
 		changedStructure();
 		parent.dereferenceChilderen();
+	}
+
+	/**
+	 * The link's row, its entry in file_link (the owner's row for a hard link, the path for a symbolic
+	 * one), the owner's link_count and the folder's modified time, in one transaction. For now the target
+	 * is also kept in the link's first chunk, which is what readers use.
+	 *
+	 * @return false if the name was taken meanwhile
+	 */
+	private boolean insertLinkRows(boolean hard, long ownerId, String path, String content) throws IOException {
+		long pid = parent.rowId();
+		String user = factory.getUserId();
+		byte[] bytes = content.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+		for (int attempt = 1; ; attempt++) {
+			try(Connection con = factory.getConnection()) {
+				con.setAutoCommit(false);
+				try {
+					try(PreparedStatement pstmt = con.prepareStatement("insert into file_source.file (name,parentid,owner,file_type,"
+							+OWNER_EXECUTABLE+") values(?,?,?,?,?)")) {
+						pstmt.setString(1, name);
+						pstmt.setLong(2, pid);
+						pstmt.setString(3, user);
+						pstmt.setString(4, hard ? HARD : LINK);
+						pstmt.setBoolean(5, false);
+						pstmt.executeUpdate();
+					}
+					long id = findRowId(con, pid);
+					if( id < 0 ) {
+						throw new IOException("Can't create the link " + getAbsolutePath());
+					}
+					try(PreparedStatement pstmt = con.prepareStatement(
+							"update file_source.file set "+LAST_MODIFIED_DATE+" = ? where fileid = ?")) {
+						pstmt.setTimestamp(1, new Timestamp(System.currentTimeMillis()));
+						pstmt.setLong(2, pid);
+						pstmt.executeUpdate();
+					}
+					try(PreparedStatement pstmt = con.prepareStatement(
+							"insert into file_source.file_link (link_id,target_id,target_path) values(?,?,?)")) {
+						pstmt.setLong(1, id);
+						if( hard ) {
+							pstmt.setLong(2, ownerId);
+							pstmt.setNull(3, java.sql.Types.VARCHAR);
+						} else {
+							pstmt.setNull(2, java.sql.Types.BIGINT);
+							pstmt.setString(3, path);
+						}
+						pstmt.executeUpdate();
+					}
+					if( hard ) {
+						try(PreparedStatement pstmt = con.prepareStatement(
+								"update file_source.file set link_count = link_count + 1 where fileid = ?")) {
+							pstmt.setLong(1, ownerId);
+							if( pstmt.executeUpdate() != 1 ) {
+								throw new java.nio.file.NoSuchFileException(getAbsolutePath());
+							}
+						}
+					}
+					try(PreparedStatement pstmt = con.prepareStatement(
+							"insert into file_source.file_data (chunk_number,fileid,length,data) values(1,?,?,?)")) {
+						pstmt.setLong(1, id);
+						pstmt.setInt(2, bytes.length);
+						pstmt.setBytes(3, bytes);
+						pstmt.executeUpdate();
+					}
+					try(PreparedStatement pstmt = con.prepareStatement(
+							"update file_source.file set chunk_count = 1, length = ? where fileid = ?")) {
+						pstmt.setLong(1, bytes.length);
+						pstmt.setLong(2, id);
+						pstmt.executeUpdate();
+					}
+					con.commit();
+					fileid = null;
+					fieldCache.clear();
+					parent.fieldCache.clear();
+					parent.changed();
+					return true;
+				} catch (SQLException | IOException | RuntimeException e) {
+					try {
+						con.rollback();
+					} catch (SQLException e2) {
+						// the connection is gone; what it did is undone with it
+					}
+					throw e;
+				}
+			} catch (SQLException e) {
+				if( isSqlState(e, "23") ) {
+					return false;   // another caller made the name first: UNIQUE(parentid, name) lets only one in
+				}
+				if( attempt >= APPEND_ATTEMPTS || !isRetryable(e) ) {
+					throw new IOException(e);
+				}
+				try {
+					Thread.sleep(attempt * 5L + (long) (Math.random() * 10));
+				} catch (InterruptedException ie) {
+					Thread.currentThread().interrupt();
+					throw new IOException(e);
+				}
+			}
+		}
+	}
+
+	private static boolean isSqlState(SQLException e, String prefix) {
+		for (Throwable t = e; t != null; t = t.getCause()) {
+			if( t instanceof SQLException ) {
+				String state = ((SQLException) t).getSQLState();
+				if( state != null && state.startsWith(prefix) ) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+
+	/** The id of this path's row in the folder pid, or -1. */
+	private long findRowId(Connection con, long pid) throws SQLException {
+		try(PreparedStatement pstmt = con.prepareStatement("select fileid from file_source.file where name = ? and parentid = ?")) {
+			pstmt.setString(1, name);
+			pstmt.setLong(2, pid);
+			try(ResultSet rs = pstmt.executeQuery()) {
+				return rs.next() ? rs.getLong(1) : -1;
+			}
+		}
 	}
 
 	/**
@@ -929,6 +1062,22 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 					pstmt.setObject(i+2, values[i]);
 				}
 				pstmt.setLong(cols.length+2, heir);
+				pstmt.executeUpdate();
+			}
+			// the heir is a file now: it has no entry of its own, the others point at it, and it counts them
+			try(PreparedStatement pstmt = con.prepareStatement("delete from file_source.file_link where link_id = ?")) {
+				pstmt.setLong(1, heir);
+				pstmt.executeUpdate();
+			}
+			try(PreparedStatement pstmt = con.prepareStatement("update file_source.file_link set target_id = ? where target_id = ?")) {
+				pstmt.setLong(1, heir);
+				pstmt.setLong(2, fileid);
+				pstmt.executeUpdate();
+			}
+			try(PreparedStatement pstmt = con.prepareStatement(
+					"update file_source.file set link_count = (select count(*) from file_source.file_link where target_id = ?) where fileid = ?")) {
+				pstmt.setLong(1, heir);
+				pstmt.setLong(2, heir);
 				pstmt.executeUpdate();
 			}
 			// the other names now point at the heir
