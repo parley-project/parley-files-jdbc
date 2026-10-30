@@ -476,12 +476,12 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 					throw e;
 				}
 			} catch (SQLException e) {
-				if( attempt >= APPEND_ATTEMPTS || !isRetryable(e) ) {
+				if( attempt >= TRANSACT_ATTEMPTS || !isRetryable(e) ) {
 					throw new IOException(e);
 				}
 				// a deadlock or serialization failure: the database rolled it back, so do it again
 				try {
-					Thread.sleep(attempt * 5L + (long) (Math.random() * 10));
+					Thread.sleep(attempt * 10L + (long) (Math.random() * 20 * attempt));
 				} catch (InterruptedException ie) {
 					Thread.currentThread().interrupt();
 					throw new IOException(e);
@@ -1504,11 +1504,13 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		long pid = parent == null ? 0 : parent.rowId();
 		JdbcFileSource folder = parent == null ? null : parent.resolve();   // a linked folder is the one it leads to
 		forgetResolution();
+		long inode;
 		try {
-			transact(con -> {
-				insertName(con, pid, insertInode(con, file_type, executable));
+			inode = transact(con -> {
+				long id = insertInode(con, file_type, executable);
+				insertName(con, pid, id);
 				touch(con, pid);
-				return null;
+				return id;
 			});
 		} catch (IOException e) {
 			if( isDuplicateKey(e) ) {
@@ -1521,12 +1523,32 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			throw e;
 		}
 		fieldCache.clear();
+		if( FILE.equals(file_type) ) {
+			knowNewFile(inode);
+		}
 		changed();
 		if( folder != null && folder.rowExists() ) {
 			folder.fieldCache.clear();
 			folder.changed();
 		}
 		return true;
+	}
+
+	/**
+	 * What a file just made is, without looking it up: its id, that it is a file and that it is empty.
+	 * (Its other attributes are read when asked for.) A caller that makes a file to write to it would
+	 * look the row up, and sum the length of its data, only to find what it was just told.
+	 */
+	private void knowNewFile(long inode) {
+		long now = System.currentTimeMillis();
+		fileid = inode;
+		fileidAt = now;
+		ownTypeValue = FILE;
+		ownTypeAt = now;
+		fieldCache.put("own_type", new NamedField("own_type", FILE));
+		fieldCache.put(JdbcFileSourceFactory.FILE_TYPE, new NamedField(JdbcFileSourceFactory.FILE_TYPE, FILE));
+		fieldCache.put(LENGTH, new NamedField(LENGTH, 0L));
+		fieldCache.put(CHUNK_COUNT, new NamedField(CHUNK_COUNT, 0L));
 	}
 
 
@@ -2064,12 +2086,8 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 						throw new IOException("Could not insert chunk="+chunk);
 					}
 				}
-				try(PreparedStatement pstmt = con.prepareStatement(
-						"update file_source.file set chunk_count=? where fileid=?")) {
-					pstmt.setInt(1, (int) chunk);
-					pstmt.setLong(2, id);
-					pstmt.executeUpdate();
-				}
+				// (file.chunk_count is not written: the count of chunks is read from the data, so keeping it
+				// cost a statement for each append and nothing else)
 				con.commit();
 				setFieldCache(LAST_ACCESS_DATE, time);
 				setFieldCache(LAST_MODIFIED_DATE, time);
