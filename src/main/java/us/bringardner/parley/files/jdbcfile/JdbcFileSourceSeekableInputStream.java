@@ -24,6 +24,8 @@ public class JdbcFileSourceSeekableInputStream extends InputStream implements IS
 	/** the stream the last read used, and where it is now; null if there isn't one at the pointer */
 	private InputStream current;
 	private long currentAt = -1;
+	/** the file the first read opened */
+	private Long inode;
 
 	JdbcFileSourceSeekableInputStream(JdbcFileSource file) {
 		this.file = file;
@@ -68,7 +70,13 @@ public class JdbcFileSourceSeekableInputStream extends InputStream implements IS
 		}
 		if( current == null || currentAt != pointer ) {
 			dropCurrent();
-			current = file.getInputStream(pointer);
+			if( inode == null ) {
+				JdbcFileInputStream first = (JdbcFileInputStream) file.getInputStream(pointer);
+				inode = first.inode();
+				current = first;
+			} else {
+				current = file.openInode(inode, pointer);   // the file first read, whatever became of its name
+			}
 			currentAt = pointer;
 		}
 		int n = current.read(data, off, len);

@@ -824,7 +824,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	}
 
 	/** The id of the row that answers for this path. It is for a file that exists (or is about to). */
-	private long rowId() throws IOException {
+	long rowId() throws IOException {
 		JdbcFileSource r = resolve();
 		// (read once: another thread may look the row up again meanwhile)
 		Long id = r.fileid;
@@ -2086,34 +2086,42 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	}
 
 	public byte[] getChunk(long chunk) throws IOException {
-		byte [] ret = null;
-		int max = getChunkCount();
-		if( max >= chunk) {
-			long id = rowId();
-			try(Connection con = factory.getConnection()) {
-				try(PreparedStatement pstmt = con.prepareStatement(
-						"select length,data from file_source.file_data where chunk_number=? and fileid=? ")) {
-					pstmt.setLong(1, chunk);
-					pstmt.setLong(2, id);
-					try(ResultSet rs = pstmt.executeQuery()) {
-						if( rs.next()) {
-							int len = rs.getInt(1);
-							byte [] tmp = rs.getBytes(2);
-							if( len != tmp.length) {
-								byte tmp2 [] = new byte[len];
-								System.arraycopy(tmp2,0,tmp,0,len);
-								tmp = tmp2;
-							}
-							ret = tmp;
-						}
-					}
-				}	
-			} catch (SQLException e) {
-				throw new IOException(e);			
-			}
+		if( getChunkCount() < chunk ) {
+			return null;
 		}
+		return getChunk(rowId(), chunk);
+	}
 
+	/** One chunk of the file with this inode id, or null past its last chunk or when the file is gone. */
+	byte[] getChunk(long id, long chunk) throws IOException {
+		byte [] ret = null;
+		try(Connection con = factory.getConnection()) {
+			try(PreparedStatement pstmt = con.prepareStatement(
+					"select length,data from file_source.file_data where chunk_number=? and fileid=? ")) {
+				pstmt.setLong(1, chunk);
+				pstmt.setLong(2, id);
+				try(ResultSet rs = pstmt.executeQuery()) {
+					if( rs.next()) {
+						int len = rs.getInt(1);
+						byte [] tmp = rs.getBytes(2);
+						if( len != tmp.length) {
+							byte tmp2 [] = new byte[len];
+							System.arraycopy(tmp2,0,tmp,0,len);
+							tmp = tmp2;
+						}
+						ret = tmp;
+					}
+				}
+			}
+		} catch (SQLException e) {
+			throw new IOException(e);
+		}
 		return ret;
+	}
+
+	/** Opens the file with this inode id, as {@link #getInputStream(long)} but not through the name. */
+	InputStream openInode(long id, long startingPosition) throws IOException {
+		return new JdbcFileInputStream(this, id, startingPosition);
 	}
 
 

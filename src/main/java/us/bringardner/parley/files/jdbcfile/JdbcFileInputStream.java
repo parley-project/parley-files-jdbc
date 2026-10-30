@@ -41,6 +41,8 @@ public class JdbcFileInputStream extends InputStream {
 
 
 	private JdbcFileSource file;
+	/** The file read, not its name: a delete of the name leaves the data until the last name goes. */
+	private final long inode;
 	private byte [] data ;
 	private int pos=-1;
 	private int currentChunk;
@@ -61,10 +63,26 @@ public class JdbcFileInputStream extends InputStream {
 			throw new FileNotFoundException("Jdbc file "+file.getCanonicalPath()+") does not exists or is not a file.");
 		}
 
+		this.inode = file.rowId();
 		currentChunk = 1;
 		if( startingPosition> 0 ) {
 			skip(startingPosition);
 		}
+	}
+
+	/** Reads the file already open as inode, whatever has happened to the name since. */
+	JdbcFileInputStream(JdbcFileSource file, long inode, long startingPosition) throws IOException {
+		super();
+		this.file = file;
+		this.inode = inode;
+		currentChunk = 1;
+		if( startingPosition> 0 ) {
+			skip(startingPosition);
+		}
+	}
+
+	long inode() {
+		return inode;
 	}
 
 	/* (non-Javadoc)
@@ -134,7 +152,7 @@ public class JdbcFileInputStream extends InputStream {
 
 	private void loadNextChunk() throws IOException {
 
-		data = file.getChunk(currentChunk++);
+		data = file.getChunk(inode, currentChunk++);
 		pos = 0;
 		if( data == null ){
 			eof = true;

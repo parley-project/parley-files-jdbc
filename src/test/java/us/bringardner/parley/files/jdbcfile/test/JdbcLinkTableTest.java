@@ -7,6 +7,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
+import java.nio.channels.OverlappingFileLockException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
@@ -21,6 +22,7 @@ import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
 import us.bringardner.parley.files.FileSource;
+import us.bringardner.parley.files.lock.FileSourceLock;
 import us.bringardner.parley.files.jdbcfile.JdbcFileSourceFactory;
 
 /**
@@ -204,6 +206,51 @@ public class JdbcLinkTableTest {
 		// a write through the surviving name is the same file
 		write("/links/live-link", "changed");
 		assertEquals(7, kept.length());
+	}
+
+	@Test
+	public void aStreamOpenedBeforeTheNameWasDeletedKeepsReading() throws Exception {
+		write("/links/open.txt", "read after delete");
+		factory().createLink(at("/links/open-link"), at("/links/open.txt"));
+		try (InputStream in = at("/links/open.txt").getInputStream()) {
+			assertEquals('r', in.read());
+			assertTrue(at("/links/open.txt").delete());
+			assertEquals("ead after delete", new String(in.readAllBytes(), StandardCharsets.UTF_8));
+		}
+	}
+
+	@Test
+	public void aSeekableStreamKeepsTheFileItFirstReadWhenItsNameIsReplaced() throws Exception {
+		write("/links/seek.txt", "0123456789");
+		factory().createLink(at("/links/seek-link"), at("/links/seek.txt"));
+		us.bringardner.parley.files.ISeekableInputStream in = at("/links/seek.txt").getSeekableInputStream();
+		try {
+			assertEquals('0', in.read());
+			assertTrue(at("/links/seek.txt").delete());
+			write("/links/seek.txt", "other file");   // the same name, a different inode
+			in.seek(5);
+			byte[] b = new byte[5];
+			assertEquals(5, in.read(b));
+			assertEquals("56789", new String(b, StandardCharsets.UTF_8));
+		} finally {
+			in.close();
+		}
+	}
+
+	@Test
+	public void aLockStaysWithTheInodeWhenOneNameIsDeleted() throws Exception {
+		write("/links/lock.txt", "locked");
+		factory().createLink(at("/links/lock-link"), at("/links/lock.txt"));
+		FileSourceLock lock = at("/links/lock.txt").tryLock();
+		assertTrue(lock.isValid());
+		assertTrue(at("/links/lock.txt").delete());
+		assertTrue(lock.isValid(), "the file is still there under its other name");
+		assertThrows(OverlappingFileLockException.class, () -> at("/links/lock-link").tryLock(),
+				"the other name is the same file, so the same lock");
+		lock.release();
+		try (FileSourceLock again = at("/links/lock-link").tryLock()) {
+			assertTrue(again.isValid());
+		}
 	}
 
 	@Test
