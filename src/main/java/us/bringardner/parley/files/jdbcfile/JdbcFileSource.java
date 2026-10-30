@@ -371,7 +371,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 				return false;
 			}
 			long id = fileid;
-			int outcome = deleteName(id);
+			int outcome = deleteName(id, type);
 			if( outcome != GONE ) {
 				if( !FILE.equals(type) ) {
 					changedStructure();
@@ -398,8 +398,9 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	 * finds it gone: no name is ever left pointing at nothing.
 	 *
 	 * @param id the inode this handle found under the name
+	 * @param type what the inode is (file, directory or link)
 	 */
-	private int deleteName(long id) throws IOException {
+	private int deleteName(long id, String type) throws IOException {
 		Long parentId = null;
 		JdbcFileSource folder = parent == null ? null : parent.resolve();   // a linked folder is the one it leads to
 		if( folder != null && folder.rowExists() ) {
@@ -426,26 +427,29 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 						pstmt.setLong(1, id);
 						pstmt.executeUpdate();
 					}
-					long left = 0;
-					try(PreparedStatement pstmt = con.prepareStatement("select link_count from file_source.file where fileid = ?")) {
+					// the row is deleted only if that was the last name: the count update has locked it, so a
+					// hard link made at the same moment is either counted before this or finds the file gone
+					boolean last;
+					try(PreparedStatement pstmt = con.prepareStatement(
+							"delete from file_source.file where fileid = ? and link_count <= 0")) {
 						pstmt.setLong(1, id);
-						try(ResultSet rs = pstmt.executeQuery()) {
-							if( rs.next() ) {
-								left = rs.getLong(1);
-							}
-						}
+						last = pstmt.executeUpdate() == 1;
 					}
-					if( left > 0 ) {
-						outcome = UNLINKED;
-					} else {
-						for(String table : new String[] {"file_source.file_data where fileid", "file_source.file_link where link_id", "file_source.file where fileid"}) {
-							try(PreparedStatement pstmt = con.prepareStatement("delete from " + table + " = ?")) {
+					if( last ) {
+						// (only a file has data, and only a symbolic link has an entry)
+						if( FILE.equals(type) ) {
+							try(PreparedStatement pstmt = con.prepareStatement("delete from file_source.file_data where fileid = ?")) {
+								pstmt.setLong(1, id);
+								pstmt.executeUpdate();
+							}
+						} else if( LINK.equals(type) ) {
+							try(PreparedStatement pstmt = con.prepareStatement("delete from file_source.file_link where link_id = ?")) {
 								pstmt.setLong(1, id);
 								pstmt.executeUpdate();
 							}
 						}
-						outcome = DELETED;
 					}
+					outcome = last ? DELETED : UNLINKED;
 					if( parentId != null ) {
 						// a directory's modified time is when something was last taken out of it
 						try(PreparedStatement pstmt = con.prepareStatement(
