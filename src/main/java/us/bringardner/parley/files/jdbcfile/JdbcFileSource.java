@@ -1195,6 +1195,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			}
 		}
 
+		boolean created = false;
 		if( !hasRow || !exists()) {
 			// as a FileOutputStream: the directory above must be there, and be a directory
 			FileSource above = getParentFile();
@@ -1209,6 +1210,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			}
 			// this is a file so it always has a parent
 			parent.dereferenceChilderen();
+			created = true;
 		}
 
 		// this should never happen
@@ -1217,7 +1219,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		}
 
 
-		return new JdbcFileOutputStream(this, append, chunkSize);
+		return new JdbcFileOutputStream(this, append, chunkSize, created);
 
 	}
 
