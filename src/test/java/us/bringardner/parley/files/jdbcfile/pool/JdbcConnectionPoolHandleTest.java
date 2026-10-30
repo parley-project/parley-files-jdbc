@@ -47,7 +47,10 @@ public class JdbcConnectionPoolHandleTest {
 						return true;
 					case "prepareStatement":
 						return Proxy.newProxyInstance(getClass().getClassLoader(),
-								new Class<?>[] { java.sql.PreparedStatement.class }, (p, m, a) -> null);
+								new Class<?>[] { java.sql.PreparedStatement.class }, (p, m, a) -> {
+									Class<?> t = m.getReturnType();
+									return t == boolean.class ? (Object) false : t == int.class ? (Object) 0 : null;
+								});
 					default:
 						Class<?> type = method.getReturnType();
 						if( type == boolean.class ) {
@@ -132,7 +135,7 @@ public class JdbcConnectionPoolHandleTest {
 	void aConnectionWhoseResetFailsIsNotReused() throws Exception {
 		Connection c = pool.getConnection();
 		c.setAutoCommit(false);
-		c.prepareStatement("update t set x = 1");
+		c.prepareStatement("update t set x = 1").execute();
 		made.get(0).failRollback = true;
 		c.close();
 
@@ -164,7 +167,7 @@ public class JdbcConnectionPoolHandleTest {
 	void waitersGetAConnectionThatWasDiscarded() throws Exception {
 		Connection c = pool.getConnection();
 		c.setAutoCommit(false);
-		c.prepareStatement("x");
+		c.prepareStatement("x").execute();
 		made.get(0).failRollback = true;
 
 		AtomicInteger got = new AtomicInteger();

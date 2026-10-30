@@ -92,6 +92,8 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 					return handle;
 				}
 				if( name.startsWith("execute") ) {
+					//  The server gets the borrower's auto-commit mode now, if it has not yet
+					syncAutoCommit();
 					//  A statement made before a commit and run after it opens a transaction again
 					markDirty();
 				}
@@ -117,6 +119,12 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 
 	/** The auto-commit mode the borrower has the connection in now. */
 	private volatile boolean autoCommitNow;
+	/**
+	 * The auto-commit mode the server has. It differs from autoCommitNow between a change and the next
+	 * thing that needs the mode (see syncAutoCommit); a release does not put it back, so the next
+	 * borrower who wants the same mode as the last one pays nothing.
+	 */
+	private volatile boolean autoCommitPhysical;
 	/**
 	 * A transaction may be open: auto-commit is off and a statement was made since the last commit or
 	 * rollback. A release rolls back only then (a rollback is a statement to the server whenever
@@ -162,6 +170,20 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 		}
 	}
 
+	/**
+	 * Sends the borrower's auto-commit mode to the server if the server does not have it. A change is
+	 * only recorded until something needs the mode: a statement, a commit, a rollback, a savepoint,
+	 * metadata, or the native connection. Setting auto-commit off and back on with nothing between
+	 * sends nothing, and a borrower that sets the mode the connection was last left in sends nothing.
+	 */
+	private void syncAutoCommit() throws SQLException {
+		boolean now = autoCommitNow;
+		if( autoCommitPhysical != now ) {
+			con.setAutoCommit(now);
+			autoCommitPhysical = now;
+		}
+	}
+
 	private void markDirty() {
 		if( !autoCommitNow && !dirty ) {
 			dirty = true;
@@ -174,6 +196,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 		isolation = con.getTransactionIsolation();
 		autoCommit = con.getAutoCommit();
 		autoCommitNow = autoCommit;
+		autoCommitPhysical = autoCommit;
 		readOnly = con.isReadOnly();
 		try { catalog = con.getCatalog(); } catch(Exception ex) {}
 		try { schema = con.getSchema(); } catch(Exception | AbstractMethodError ex) {}
@@ -209,14 +232,19 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 		//  is broken (or in a state we can't put right): it is thrown away, not given to the next user.
 		boolean broken = false;
 		if( dirty ) {
-			try { con.rollback(); } catch(Exception ex) { broken = true; }
+			//  (dirty with the server still in auto-commit: a statement was made and never run, as a run
+			//  sends the mode first, so there is nothing to roll back, and a rollback there is an error)
+			if( !autoCommitPhysical ) {
+				try { con.rollback(); } catch(Exception ex) { broken = true; }
+			}
 			dirty = false;
 		}
 		try { con.clearWarnings(); } catch(Exception ex) { broken = true; }
 		// (only what the borrower changed: each of these is a statement to the server, three for
 		// every use of a pooled connection, most of all the statements a file system sends)
 		//  (and the flags are written only when they were set: a write to a volatile is not free)
-		if( autoCommitSet ) { try { con.setAutoCommit(autoCommit); } catch(Exception ex) { broken = true; } autoCommitSet = false; autoCommitNow = autoCommit; }
+		//  (the mode is put back for the next borrower, but not sent: see syncAutoCommit)
+		if( autoCommitSet ) { autoCommitSet = false; autoCommitNow = autoCommit; }
 		if( isolationSet ) { try { con.setTransactionIsolation(isolation); } catch(Exception ex) { broken = true; } isolationSet = false; }
 		if( readOnlySet ) { try { con.setReadOnly(readOnly); } catch(Exception ex) { broken = true; } readOnlySet = false; }
 		if( catalogSet ) { try { con.setCatalog(catalog); } catch(Exception ex) { broken = true; } catalogSet = false; }
@@ -240,6 +268,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	public void commit() throws SQLException 
 	{
 		touch();
+		syncAutoCommit();
 		con.commit();
 		dirty = false;
 	}
@@ -291,7 +320,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	public boolean getAutoCommit() throws SQLException {
 		touch();
-		return con.getAutoCommit();
+		return autoCommitNow;
 	}
 	/**
 	 * Returns the Connection's current catalog name.
@@ -316,6 +345,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	public DatabaseMetaData getMetaData() throws SQLException {
 		touch();
+		syncAutoCommit();
 		return (DatabaseMetaData) getKeepalive(con.getMetaData());
 	}
 	/**
@@ -509,6 +539,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	public void rollback() throws SQLException 
 	{
 		touch();
+		syncAutoCommit();
 		con.rollback();
 		dirty = false;
 	}
@@ -539,10 +570,11 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	{
 		touch();
 		autoCommitSet = true;
-		con.setAutoCommit(autoCommit);
 		autoCommitNow = autoCommit;
-		if( autoCommit ) {
-			dirty = false;   // (turning auto-commit on commits what was open)
+		if( autoCommit && dirty ) {
+			//  Turning auto-commit on commits what was open: that is not put off
+			syncAutoCommit();
+			dirty = false;
 		}
 	}
 	/**
@@ -574,6 +606,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	{
 		touch();
 		readOnlySet = true;
+		syncAutoCommit();
 		con.setReadOnly(readOnly)	;
 	}
 	/**
@@ -595,6 +628,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	{
 		touch();
 		isolationSet = true;
+		syncAutoCommit();
 		con.setTransactionIsolation(level);
 	}
 	/**
@@ -677,6 +711,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 * @see java.sql.Connection#rollback(java.sql.Savepoint)
 	 */
 	public void rollback(Savepoint arg0) throws SQLException {
+		syncAutoCommit();
 		con.rollback(arg0);
 	}
 
@@ -684,6 +719,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 * @see java.sql.Connection#releaseSavepoint(java.sql.Savepoint)
 	 */
 	public void releaseSavepoint(Savepoint arg0) throws SQLException {
+		syncAutoCommit();
 		con.releaseSavepoint(arg0);	
 	}
 
@@ -692,6 +728,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	public Savepoint setSavepoint() throws SQLException {
 
+		syncAutoCommit();
 		markDirty();
 		return con.setSavepoint();
 	}
@@ -701,6 +738,7 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	 */
 	public Savepoint setSavepoint(String arg0) throws SQLException {
 
+		syncAutoCommit();
 		markDirty();
 		return con.setSavepoint(arg0);
 	}
@@ -714,6 +752,8 @@ public class ManagedJdbcConnection extends ManagedObjectImp implements Connectio
 	}
 	public <T> T unwrap(Class<T> arg0) throws SQLException {
 		touch();
+		//  The caller gets the driver's connection, which must have the mode the caller asked for
+		syncAutoCommit();
 		return con.unwrap(arg0);
 	}
 	public Array createArrayOf(String arg0, Object[] arg1) throws SQLException {
