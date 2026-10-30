@@ -142,6 +142,45 @@ needs, and on the mail server test it was level with HikariCP for one connection
 Choose HikariCP if many threads borrow connections at once, or if you already run it and want one pool to
 configure. DBCP2 works but was the slowest in every test, about 10% behind on the mail server test.
 
+## MySQL connection properties
+
+Connector/J's defaults cost the file system CPU it does not need to spend. Two properties on the `jdbcUrl` make the
+mail store on MySQL about 16% faster, and they are recommended for MySQL 8:
+
+```
+jdbc:mysql://db.example.com:3306/?useServerPrepStmts=true&cachePrepStmts=true&prepStmtCacheSize=250&prepStmtCacheSqlLimit=2048
+```
+
+By default the driver prepares a statement on the client and writes each binary parameter into the SQL text as hex,
+so a 5 KB message chunk travels as 10 KB of text. With `useServerPrepStmts=true` the
+statement is prepared on the server and the chunk is sent in the binary protocol; `cachePrepStmts=true` keeps the
+prepared statements of a connection, so each is prepared once. `cachePrepStmts` alone, which only caches the
+client's parsing, made no difference.
+
+The B1 test (500 messages of 5 KB, one SMTP connection, MySQL 8.4.11 and Connector/J 8.4.0 on a 2-vCPU server that
+also ran the client; messages per second until all are in the mailbox, two runs of each, the order reversed in the
+second):
+
+| URL properties | Messages per second | Against none |
+|---|---|---|
+| none | 20.5, 19.6 | |
+| `useServerPrepStmts=true&cachePrepStmts=true` (the above) | 23.6, 22.8 | +16% |
+| `cachePrepStmts=true` alone | 20.6, 20.5 | no change |
+| the above, and `sslMode=DISABLED` | 26.3, 24.8 | +27% |
+
+Runs differ by about one message per second. The statements per message did not change (187). The MySQL lock tests
+(`JdbcMySqlLockTest`) pass with these properties, with the same results as without, and so does the two-server
+cluster test (200 messages to each server while IMAP clients change flags, append and delete).
+
+Things to know:
+
+- **Statement slots.** Each connection keeps up to `prepStmtCacheSize` statements prepared on the server, and the
+  server limits them all to `max_prepared_stmt_count` (16,382 by default). Keep the number of pooled connections
+  times the cache size below it.
+- **`sslMode=DISABLED` is only for a database on the same machine.** It removes the encryption of every packet,
+  which was worth about another 10% on the test above. Keep TLS for a database reached over a network.
+- **Other databases.** These are Connector/J properties; PostgreSQL and HSQLDB were not changed or measured.
+
 ## Users and permissions
 
 A JDBC file system's current user is the database user (`jdbcUser`); every file it
