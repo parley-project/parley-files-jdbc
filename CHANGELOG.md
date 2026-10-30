@@ -28,6 +28,9 @@
   had borrowed since.
 
 ### Added
+- **README: MySQL connection properties.** `useServerPrepStmts=true&cachePrepStmts=true` on the `jdbcUrl` made the B1
+  mail store test 16% faster (20.1 to 23.2 messages/s), with the MySQL lock tests and the cluster test passing; the
+  README gives the URL, the numbers and the limits (statement slots; TLS stays on for a remote database).
 
 - **`jdbcAccessTime`**, a connection property: `false` is like a file system mounted `noatime`, so opening a file for
   reading does not write its access time (one statement and one commit each). Writes and `setLastAccessTime()` still
