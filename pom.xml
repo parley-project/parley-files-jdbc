@@ -140,6 +140,13 @@
 			<version>5.11.4</version>
 			<scope>test</scope>
 		</dependency>
+		<!-- The settings check's list reader (KnownSettingsTest): parley-net's KnownSettings -->
+		<dependency>
+			<groupId>us.bringardner.parley</groupId>
+			<artifactId>parley-net</artifactId>
+			<version>${project.version}</version>
+			<scope>test</scope>
+		</dependency>
 	</dependencies>
 
 </project>

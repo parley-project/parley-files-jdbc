@@ -28,6 +28,9 @@
   had borrowed since.
 
 ### Added
+- **The settings this module reads are listed** in `META-INF/parley/settings.list`, so a Parley server's
+  start-up check (parley-net's `KnownSettings`, To-Do 2.16) knows them and warns only about a setting
+  nothing reads. A test checks the list has every name the code here reads.
 - **README: MySQL connection properties.** `useServerPrepStmts=true&cachePrepStmts=true` on the `jdbcUrl` made the B1
   mail store test 16% faster (20.1 to 23.2 messages/s), with the MySQL lock tests and the cluster test passing; the
   README gives the URL, the numbers and the limits (statement slots; TLS stays on for a remote database).

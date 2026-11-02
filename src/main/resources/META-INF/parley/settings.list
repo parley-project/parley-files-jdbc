@@ -1,0 +1,4 @@
+# The settings parley-files-jdbc reads, for the start-up check of parley-net's servers
+# (format: parley-net's KnownSettings). Add a name here when code here starts reading it.
+
+parley.files.jdbc.bufferSize
