@@ -2,3 +2,4 @@
 # (format: parley-net's KnownSettings). Add a name here when code here starts reading it.
 
 parley.files.jdbc.bufferSize
+parley.files.jdbc.lockMutexWait

@@ -32,7 +32,7 @@ import us.bringardner.parley.files.lock.LockBackend;
  * <p>
  * Taking a lock is done under a short mutex, a row lock on the file's row in
  * {@code file_source.file_lock}, taken without waiting ({@code NOWAIT}, tried again for up to
- * {@code parley.files.jdbc.lockMutexWait} ms, 200 by default; a mutex that stays taken means busy,
+ * {@code parley.files.jdbc.lockMutexWait}, 200ms by default; a mutex that stays taken means busy,
  * since a tryLock must not wait): the locker looks at every region that overlaps the one it wants,
  * removes the stale ones (it can row-lock them, so their holder is gone), and either finds one held
  * by a live holder that conflicts (both exclusive, or one of them) and gives up, or inserts its row,
@@ -59,10 +59,23 @@ final class JdbcLocks {
 
 	/**
 	 * How long a tryLock tries for a file's mutex before it calls the file busy (system property
-	 * {@code parley.files.jdbc.lockMutexWait}, ms). Lockers hold it only while they look and claim.
+	 * {@code parley.files.jdbc.lockMutexWait}, a duration, 200ms by default). Lockers hold it only while
+	 * they look and claim.
 	 */
-	static final long MUTEX_WAIT_NANOS = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(
-			Long.getLong("parley.files.jdbc.lockMutexWait", 200));
+	static final long MUTEX_WAIT_NANOS = java.util.concurrent.TimeUnit.MILLISECONDS.toNanos(mutexWaitMillis());
+
+	private static long mutexWaitMillis() {
+		String v = System.getProperty("parley.files.jdbc.lockMutexWait");
+		if( v == null || v.trim().isEmpty() ) {
+			return 200;
+		}
+		try {
+			return us.bringardner.parley.core.util.Durations.parse(v);
+		} catch (IllegalArgumentException e) {
+			System.err.println("Invalid parley.files.jdbc.lockMutexWait: "+e.getMessage()+". Using 200ms");
+			return 200;
+		}
+	}
 
 	/** The SQL each database needs. */
 	enum Dialect {

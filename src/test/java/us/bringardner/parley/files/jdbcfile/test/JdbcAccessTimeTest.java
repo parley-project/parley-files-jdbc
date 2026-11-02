@@ -15,7 +15,7 @@ import org.junit.jupiter.api.Test;
 import us.bringardner.parley.files.FileSource;
 import us.bringardner.parley.files.jdbcfile.JdbcFileSourceFactory;
 
-/** jdbcAccessTime: by default opening a file for reading writes its access time, set to false it does not. */
+/** accessTime: by default opening a file for reading writes its access time, set to false it does not. */
 public class JdbcAccessTimeTest {
 
 	@BeforeAll

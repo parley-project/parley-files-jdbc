@@ -74,28 +74,28 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 
 	public static final String FACTORY_ID = "Jdbc";
 
-	public static final String JDBC_DRIVER = "jdbcDriver";
-	public static final String JDBC_URL = "jdbcUrl";
-	public static final String JDBC_USERID = "jdbcUser";
-	public static final String JDBC_PASSWORD = "jdbcPassword";
+	public static final String JDBC_DRIVER = "driver";
+	public static final String JDBC_URL = "url";
+	public static final String JDBC_USERID = "user";
+	public static final String JDBC_PASSWORD = "password";
 	public static final String JDBC_CONNECTION_NAME = "name";
 	/** The group the database user belongs to for file permissions; empty means none. */
-	public static final String JDBC_GROUP = "jdbcGroup";
+	public static final String JDBC_GROUP = "group";
 	/** The schema's default GROUP_NAME for new files. */
 	public static final String DEFAULT_GROUP = "staff";
 	/**
 	 * "false" leaves an older schema alone; otherwise, on connect, narrow owner/group columns are
 	 * widened and the lock tables (file_source.file_lock, file_lock_range) are created where locks are kept in the database.
 	 */
-	public static final String JDBC_UPGRADE_SCHEMA = "jdbcUpgradeSchema";
+	public static final String JDBC_UPGRADE_SCHEMA = "upgradeSchema";
 	/**
 	 * "false" is like a file system mounted noatime: opening a file for reading does not write its access time
 	 * (each is a statement and a commit, for a time nothing may ever read). Writes still set it, and so does
 	 * setLastAccessTime. Anything else, and the default, writes it when a file is opened for reading.
 	 */
-	public static final String JDBC_ACCESS_TIME = "jdbcAccessTime";
+	public static final String JDBC_ACCESS_TIME = "accessTime";
 	/** Which connection pool: parley (the default), hikari or dbcp2. See ConnectionPools. */
-	public static final String JDBC_POOL = "jdbcPool";
+	public static final String JDBC_POOL = "pool";
 	/**
 	 * Bytes in one chunk: what a write buffers before it is stored as one row of
 	 * file_data, and what random access reads and writes at a time. See
@@ -266,9 +266,9 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	}
 
 	/**
-	 * The current user as this file system sees it: the database user (jdbcUser),
+	 * The current user as this file system sees it: the database user (user),
 	 * which is also the owner recorded for every file this factory creates, with
-	 * jdbcGroup (default "staff", the schema's default group) as its only group.
+	 * group (default "staff", the schema's default group) as its only group.
 	 * <p>
 	 * The inherited version returned the operating system user, which never matches a
 	 * file's owner, so owner permissions never applied and whether a file could be
@@ -433,7 +433,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	/**
 	 * Widens file_source.file.owner and group_name to VARCHAR(NAME_COLUMN_SIZE) when
 	 * the schema predates BJL-22 (VARCHAR(10)), so user names longer than 10
-	 * characters can be stored. Runs on connect unless jdbcUpgradeSchema is "false".
+	 * characters can be stored. Runs on connect unless upgradeSchema is "false".
 	 * Never fails the connection: problems (e.g. no ALTER rights, an unknown database)
 	 * are logged, and the README has the statements to run by hand.
 	 *
@@ -522,7 +522,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	/**
 	 * Makes file_source.file_data's primary key (fileid, chunk_number) when the table was made with
 	 * (chunk_number, fileid): every statement on the table filters on fileid, and with the old order
-	 * each one scans the whole table. Runs on connect unless jdbcUpgradeSchema is "false". Never fails
+	 * each one scans the whole table. Runs on connect unless upgradeSchema is "false". Never fails
 	 * the connection: problems (e.g. no ALTER rights, an unknown database) are logged, and the README
 	 * has the statement to run by hand. Rebuilding the key reads the whole table, so a large store
 	 * waits (and the table is locked) for that long, once.
@@ -607,7 +607,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 
 	/**
 	 * Makes what links are kept in when it is missing: the column file.link_count (how many names a row has) and the table file_link (a hard link's target row, a symbolic link's target path),
-	 * with an index on its target. Runs on connect unless jdbcUpgradeSchema is "false". Never fails the
+	 * with an index on its target. Runs on connect unless upgradeSchema is "false". Never fails the
 	 * connection: problems (e.g. no rights to alter a table) are logged, and the README has the
 	 * statements to run by hand. A database that already holds links made by an older version is not
 	 * converted.
@@ -884,7 +884,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 
 	/**
 	 * Only the password. (A JDBC URL can also carry credentials, e.g. ?password=...;
-	 * put them in jdbcPassword instead, or they will be saved and shown.)
+	 * put them in password instead, or they will be saved and shown.)
 	 */
 	@Override
 	public boolean isSecretProperty(String name) {

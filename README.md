@@ -21,9 +21,9 @@ implementing internet protocols. Put it on the class path and `FileSourceFactory
 
 ## Connection pool
 
-The file system takes its connections from a pool. The connection property `jdbcPool` chooses which:
+The file system takes its connections from a pool. The connection property `pool` chooses which:
 
-| `jdbcPool` | Pool | Needs on the classpath |
+| `pool` | Pool | Needs on the classpath |
 |---|---|---|
 | `parley` (default) | this library's own | nothing |
 | `hikari` | [HikariCP](https://github.com/brettwooldridge/HikariCP) | `com.zaxxer:HikariCP` |
@@ -31,15 +31,15 @@ The file system takes its connections from a pool. The connection property `jdbc
 
 ### Configuring a pool
 
-Set `jdbcPool` with the other connection properties (it is an advanced setting in a connection dialog):
+Set `pool` with the other connection properties (it is an advanced setting in a connection dialog):
 
 ```java
 JdbcFileSourceFactory factory = (JdbcFileSourceFactory) FileSourceFactory.getFileSourceFactory("Jdbc");
 Properties p = factory.getConnectProperties();
-p.setProperty("jdbcUrl", "jdbc:postgresql://db.example.com/files");
-p.setProperty("jdbcUser", "files");
-p.setProperty("jdbcPassword", "...");
-p.setProperty("jdbcPool", "hikari");        // parley (the default), hikari or dbcp2
+p.setProperty("url", "jdbc:postgresql://db.example.com/files");
+p.setProperty("user", "files");
+p.setProperty("password", "...");
+p.setProperty("pool", "hikari");        // parley (the default), hikari or dbcp2
 factory.connect(p);
 ```
 
@@ -144,7 +144,7 @@ configure. DBCP2 works but was the slowest in every test, about 10% behind on th
 
 ## MySQL connection properties
 
-Connector/J's defaults cost the file system CPU it does not need to spend. Two properties on the `jdbcUrl` make the
+Connector/J's defaults cost the file system CPU it does not need to spend. Two properties on the `url` make the
 mail store on MySQL about 16% faster, and they are recommended for MySQL 8:
 
 ```
@@ -183,9 +183,9 @@ Things to know:
 
 ## Users and permissions
 
-A JDBC file system's current user is the database user (`jdbcUser`); every file it
+A JDBC file system's current user is the database user (`user`); every file it
 creates is owned by that user, so the owner permissions apply to it. Its group is the
-`jdbcGroup` connection property, default `staff` (the schema's default group for new
+`group` connection property, default `staff` (the schema's default group for new
 files); set it empty for no group. Other database users get the group or other
 permissions stored with each file.
 
@@ -193,7 +193,7 @@ permissions stored with each file.
 
 By default opening a file for reading sets its access time (`lastAccessTime()`), as a file system does. That is one
 statement and one commit for each file opened, about 1.9 ms on MySQL, for a time that nothing may read. Set the
-connection property `jdbcAccessTime` to `false` (an advanced setting in a connection dialog) for what a file system
+connection property `accessTime` to `false` (an advanced setting in a connection dialog) for what a file system
 mounted `noatime` does: opening a file for reading no longer writes it. Writing a file still sets the access time,
 as does `setLastAccessTime()`, and the property is read when the factory connects. On the B1 mail server test it
 saves the 5 updates each message made (see the CHANGELOG for the numbers).
@@ -272,7 +272,7 @@ connection open, so many locks held at once need a database that allows as many 
 
 ## Upgrading an existing database
 
-The lock tables are new in 1.1.0. They are created when the factory connects, unless `jdbcUpgradeSchema` is
+The lock tables are new in 1.1.0. They are created when the factory connects, unless `upgradeSchema` is
 `false`; to create them yourself (the `.ddl` files have them too):
 
 ```sql
@@ -286,7 +286,7 @@ Without them, locks reach only this JVM (a warning is logged).
 The `owner` and `group_name` columns were `VARCHAR(10)`, too short for many user ids.
 New schemas (the `.ddl` files in `src/main/resources/`) use `VARCHAR(128)`. An existing schema is
 widened automatically when the factory connects (the result is logged). To leave the
-schema alone, set the connection property `jdbcUpgradeSchema` to `false`; if the database
+schema alone, set the connection property `upgradeSchema` to `false`; if the database
 user may not alter the table, or you'd rather do it yourself, run:
 
 | Database | Statements |
@@ -297,7 +297,7 @@ user may not alter the table, or you'd rather do it yourself, run:
 
 The primary key of `file_source.file_data` is `(fileid, chunk_number)`. A table made with the older
 `(chunk_number, fileid)` makes every read, append and delete of a file's data scan the whole table, and the
-cost grows with the store. The key is changed when the factory connects (the same `jdbcUpgradeSchema`
+cost grows with the store. The key is changed when the factory connects (the same `upgradeSchema`
 setting applies, and the change is logged). Rebuilding the key reads the whole table, so a large store waits
 once while it runs. To do it yourself:
 

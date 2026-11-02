@@ -2,6 +2,13 @@
 
 ## parley-files-jdbc 2.0.0 (unreleased)
 
+### Changed (2026-11-02: connection keys and durations, To-Do 2.19)
+
+- **The connection keys drop their `jdbc` prefix**: `jdbcUrl`, `jdbcUser`, `jdbcPassword`, `jdbcDriver`, `jdbcGroup`,
+  `jdbcUpgradeSchema`, `jdbcAccessTime` and `jdbcPool` are `url`, `user`, `password`, `driver`, `group`,
+  `upgradeSchema`, `accessTime` and `pool`, like every other file system's (saved connections need the new names).
+- **`parley.files.jdbc.lockMutexWait` is a duration** (`200ms`, `1s`; a bare number is ms).
+
 ### Changed (needs a configuration change)
 
 - **Property names** (Parley 2.0.0): the connection settings `jdbcURL`, `jdbcUserid` and `Name` are `jdbcUrl`,
