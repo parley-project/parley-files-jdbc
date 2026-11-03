@@ -34,7 +34,7 @@ The file system takes its connections from a pool. The connection property `pool
 Set `pool` with the other connection properties (it is an advanced setting in a connection dialog):
 
 ```java
-JdbcFileSourceFactory factory = (JdbcFileSourceFactory) FileSourceFactory.getFileSourceFactory("Jdbc");
+JdbcFileSourceFactory factory = (JdbcFileSourceFactory) FileSourceFactory.getFileSourceFactory("jdbc");
 Properties p = factory.getConnectProperties();
 p.setProperty("url", "jdbc:postgresql://db.example.com/files");
 p.setProperty("user", "files");

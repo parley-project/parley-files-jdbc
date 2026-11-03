@@ -2,6 +2,11 @@
 
 ## parley-files-jdbc 2.0.0 (unreleased)
 
+### Changed (2026-11-02: factory id, To-Do 7.14)
+
+- **The factory's id is `jdbc`** (was `Jdbc`), in lower case like every other file system's (`fileproxy`, `memory`,
+  `ftp`, `ftps`, `sftp`). Ids are looked up without regard to case, so settings that say `Jdbc` keep working.
+
 ### Changed (2026-11-02: connection keys and durations, To-Do 2.19)
 
 - **The connection keys drop their `jdbc` prefix**: `jdbcUrl`, `jdbcUser`, `jdbcPassword`, `jdbcDriver`, `jdbcGroup`,
