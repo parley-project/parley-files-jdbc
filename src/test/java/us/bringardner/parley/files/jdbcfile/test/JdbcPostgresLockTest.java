@@ -81,7 +81,6 @@ public class JdbcPostgresLockTest extends AbstractLockTests {
 	static JdbcFileSourceFactory connect(String url) throws IOException {
 		JdbcFileSourceFactory f = (JdbcFileSourceFactory) FileSourceFactory.getFileSourceFactory(JdbcFileSourceFactory.FACTORY_ID);
 		Properties p = f.getConnectProperties();
-		p.setProperty(JdbcFileSourceFactory.JDBC_DRIVER, "org.postgresql.Driver");
 		p.setProperty(JdbcFileSourceFactory.JDBC_URL, url);
 		p.setProperty(JdbcFileSourceFactory.JDBC_USERID, "postgres");
 		p.setProperty(JdbcFileSourceFactory.JDBC_PASSWORD, "postgres");

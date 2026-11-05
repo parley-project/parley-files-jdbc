@@ -54,7 +54,6 @@ import us.bringardner.parley.files.test.TestServerController;
  */
 final class JdbcTestServer implements TestServerController {
 
-	static final String DRIVER = "org.hsqldb.jdbc.JDBCDriver";
 	static final String USER = "SA";
 	static final String PASSWORD = "";
 	static final long TIMEOUT = 4000;
@@ -85,12 +84,10 @@ final class JdbcTestServer implements TestServerController {
 	static JdbcFileSourceFactory setUp(int port, String pool) throws Exception {
 		running = new JdbcTestServer(availablePort(port));
 		FileSourceTestSupport.startServer(running, TIMEOUT);
-		Class.forName(DRIVER);
 		DriverManager.getConnection(running.url(), USER, PASSWORD).close();
 
 		factory = (JdbcFileSourceFactory) FileSourceFactory.getFileSourceFactory(JdbcFileSourceFactory.FACTORY_ID);
 		Properties p = factory.getConnectProperties();
-		p.setProperty(JdbcFileSourceFactory.JDBC_DRIVER, DRIVER);
 		p.setProperty(JdbcFileSourceFactory.JDBC_URL, running.url());
 		p.setProperty(JdbcFileSourceFactory.JDBC_USERID, USER);
 		p.setProperty(JdbcFileSourceFactory.JDBC_PASSWORD, PASSWORD);

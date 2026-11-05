@@ -35,7 +35,6 @@ public class JdbcCredentialReferenceTest {
 
 	@BeforeAll
 	public static void createUser() throws Exception {
-		Class.forName(JdbcTestServer.DRIVER);
 		try (Connection con = DriverManager.getConnection(URL, "SA", ""); Statement st = con.createStatement()) {
 			st.execute("CREATE USER "+USER+" PASSWORD '"+PASSWORD+"' ADMIN");
 		}
@@ -49,7 +48,6 @@ public class JdbcCredentialReferenceTest {
 
 	private static Properties props(String password) {
 		Properties p = new Properties();
-		p.setProperty(JdbcFileSourceFactory.JDBC_DRIVER, JdbcTestServer.DRIVER);
 		p.setProperty(JdbcFileSourceFactory.JDBC_URL, URL);
 		p.setProperty(JdbcFileSourceFactory.JDBC_USERID, USER);
 		p.setProperty(JdbcFileSourceFactory.JDBC_PASSWORD, password);

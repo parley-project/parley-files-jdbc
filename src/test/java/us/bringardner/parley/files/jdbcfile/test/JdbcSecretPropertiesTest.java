@@ -17,7 +17,7 @@ public class JdbcSecretPropertiesTest {
 	public void secretPropertiesAreExactlyTheseOnes() {
 		JdbcFileSourceFactory factory = new JdbcFileSourceFactory();
 		List<String> secrets = Arrays.asList(JdbcFileSourceFactory.JDBC_PASSWORD);
-		TreeSet<String> names = new TreeSet<>(Arrays.asList(JdbcFileSourceFactory.JDBC_DRIVER, JdbcFileSourceFactory.JDBC_URL, JdbcFileSourceFactory.JDBC_USERID, JdbcFileSourceFactory.JDBC_CONNECTION_NAME));
+		TreeSet<String> names = new TreeSet<>(Arrays.asList(JdbcFileSourceFactory.JDBC_URL, JdbcFileSourceFactory.JDBC_USERID, JdbcFileSourceFactory.JDBC_CONNECTION_NAME));
 		names.addAll(secrets);
 		names.addAll(factory.getConnectProperties().stringPropertyNames());
 		for(String name : names) {

@@ -2,6 +2,15 @@
 
 ## parley-files-jdbc 2.0.0 (unreleased)
 
+### Removed (2026-11-05: the driver class setting)
+
+- **The `driver` connection setting is gone**, and with it the connect dialog's "Driver class" field and
+  `JdbcFileSourceFactory.JDBC_DRIVER`. It was never read: JDBC 4 drivers register themselves and JDBC finds the one
+  for the URL, so the driver only has to be on the class path. A saved connection that still has `driver` is unharmed.
+- **`JdbcConnectionPool`'s driver overloads are gone**: the constructor `(driver, url, user, password)`,
+  `getConnection(driver, url, user, password)` and `getConnectionPool(driver, url, user, password[, create])`, which
+  only called `Class.forName(driver)` first. Use the ones without the driver.
+
 ### Changed (2026-11-02: factory id, To-Do 7.14)
 
 - **The factory's id is `jdbc`** (was `Jdbc`), in lower case like every other file system's (`fileproxy`, `memory`,

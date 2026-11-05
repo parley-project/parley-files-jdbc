@@ -100,7 +100,6 @@ public class JdbcMySqlLockTest extends AbstractLockTests {
 	static JdbcFileSourceFactory connect() throws IOException {
 		JdbcFileSourceFactory f = (JdbcFileSourceFactory) FileSourceFactory.getFileSourceFactory(JdbcFileSourceFactory.FACTORY_ID);
 		Properties p = f.getConnectProperties();
-		p.setProperty(JdbcFileSourceFactory.JDBC_DRIVER, URL.startsWith("jdbc:mariadb:") ? "org.mariadb.jdbc.Driver" : "com.mysql.cj.jdbc.Driver");
 		p.setProperty(JdbcFileSourceFactory.JDBC_URL, URL);
 		p.setProperty(JdbcFileSourceFactory.JDBC_USERID, USER == null ? "" : USER);
 		p.setProperty(JdbcFileSourceFactory.JDBC_PASSWORD, PASSWORD == null ? "" : PASSWORD);

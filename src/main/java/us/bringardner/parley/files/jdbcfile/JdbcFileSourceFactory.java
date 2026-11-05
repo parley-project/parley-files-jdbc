@@ -74,7 +74,6 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 
 	public static final String FACTORY_ID = "jdbc";
 
-	public static final String JDBC_DRIVER = "driver";
 	public static final String JDBC_URL = "url";
 	public static final String JDBC_USERID = "user";
 	public static final String JDBC_PASSWORD = "password";
@@ -154,7 +153,6 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 		//  Tell the world what we need to connect
 		_connectProperties = new Properties();
 		_connectProperties.setProperty(JDBC_CONNECTION_NAME, "JdbcFileSource");
-		_connectProperties.setProperty(JDBC_DRIVER, "");
 		_connectProperties.setProperty(JDBC_URL, "");
 		_connectProperties.setProperty(JDBC_USERID, "");
 		_connectProperties.setProperty(JDBC_PASSWORD, "");
@@ -919,8 +917,6 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 	public List<ConnectionSetting> getConnectionSettings() {
 		return List.of(
 				ConnectionSetting.text(JDBC_CONNECTION_NAME, "Name"),
-				ConnectionSetting.text(JDBC_DRIVER, "Driver class")
-					.withDescription("Empty to let JDBC find the driver for the URL"),
 				ConnectionSetting.text(JDBC_URL, "Database URL").asRequired(),
 				ConnectionSetting.text(JDBC_USERID, "User"),
 				ConnectionSetting.secret(JDBC_PASSWORD, "Password"),

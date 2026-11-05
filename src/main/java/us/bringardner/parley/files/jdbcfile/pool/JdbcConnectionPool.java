@@ -63,17 +63,6 @@ public JdbcConnectionPool(String newUrl, String newUserid, String newPasswd)
 }
 
 /**
- * JdbcConnectionPool constructor comment.
- */
-public JdbcConnectionPool(String driver, String url, String userid, String passwd)
-	throws ClassNotFoundException
-{
-	this(url,userid, passwd);
-	Class.forName(driver);
-	
-}
-
-/**
  * createObject method comment.
  */
 public IManagedObject createObject() throws SQLException {
@@ -147,15 +136,6 @@ static public Connection getConnection(String url, String userid, String passwd)
 	}
 	
 	return ret;	
-
-	
-}
-
-static public Connection getConnection(String driver, String url, String userid, String passwd)
-	throws SQLException, ClassNotFoundException
-{
-	Class.forName(driver);	
-	return getConnection(url,userid,passwd);	
 
 	
 }
@@ -265,28 +245,6 @@ public static void setPools(Map<String, JdbcConnectionPool> newPools) {
 	pools = (newPools instanceof ConcurrentMap) ? newPools : Collections.synchronizedMap(newPools);
 }
 
-
-@Deprecated
-public static JdbcConnectionPool getConnectionPool(String driver,String url, String userid, String passwd)
-	throws SQLException,ClassNotFoundException
-{
-	Class.forName(driver);
-	
-	return getConnectionPool(url,userid,passwd, true);
-	
-}
-
-@Deprecated
-public static JdbcConnectionPool getConnectionPool(String driver,String url, String userid, String passwd, boolean create)
-	throws SQLException,ClassNotFoundException
-{
-	Class.forName(driver);
-	
-	
-	return getConnectionPool(url,userid,passwd, create);
-
-	
-}
 
 @Deprecated
 public static JdbcConnectionPool getConnectionPool(String url, String userid, String passwd, boolean create)
