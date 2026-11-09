@@ -2,6 +2,12 @@
 
 ## parley-files-jdbc 2.0.0 (unreleased)
 
+### Changed (2026-11-08: logging through ILogger, To-Do 19.1 and 19.2)
+
+- **Logging goes through parley-core's ILogger**: `ObjectPool` is a `BaseObject` now (so is every pool,
+  `JdbcConnectionPool` included), and `JdbcLocks` logs through `BaseObject.findLogger`. Neither uses
+  System.Logger or java.util.logging directly any more.
+
 ### Removed (2026-11-05: the driver class setting)
 
 - **The `driver` connection setting is gone**, and with it the connect dialog's "Driver class" field and
