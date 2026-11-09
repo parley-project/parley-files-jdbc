@@ -33,6 +33,7 @@ import java.util.concurrent.FutureTask;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
+import us.bringardner.parley.core.BaseObject;
 
 /**
  * A pool of reusable Objects.
@@ -40,9 +41,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * Creation date: (7/3/02 3:09:53 PM)
  * @author: Tony Bringardner
  */
-abstract public class ObjectPool implements Runnable {
+abstract public class ObjectPool extends BaseObject implements Runnable {
 
-	private static final System.Logger LOG = System.getLogger(ObjectPool.class.getName());
 
 	//  Class variable are used to initialize new objects
 	private static int defaultMin = 1;
@@ -136,7 +136,7 @@ abstract public class ObjectPool implements Runnable {
 		try {
 			destroyObject(obj.getObject());
 		} catch(Throwable ex) {
-			LOG.log(System.Logger.Level.DEBUG, getName()+": destroying an object failed", ex);
+			logDebug(getName()+": destroying an object failed", ex);
 		}
 	}
 
@@ -396,7 +396,7 @@ abstract public class ObjectPool implements Runnable {
 
 		if( ret == null ) {
 			if(debug|| size()>=autoDebug){
-				LOG.log(System.Logger.Level.WARNING, getName()+": no object available\n"+getAllSource());
+				logWarn(getName()+": no object available\n"+getAllSource());
 			}
 			throw new ObjectCreateException(message);
 		}
@@ -604,7 +604,7 @@ abstract public class ObjectPool implements Runnable {
 							remove(it,obj,victims);
 						}
 					} catch(Exception ex) {
-						LOG.log(System.Logger.Level.ERROR, "Unexpected error in "+getName()+" run", ex);
+						logError("Unexpected error in "+getName()+" run", ex);
 					}
 				}
 			}
@@ -613,7 +613,7 @@ abstract public class ObjectPool implements Runnable {
 				destroyQuietly(v);
 			}
 			if( !victims.isEmpty() ) {
-				LOG.log(System.Logger.Level.DEBUG, "{0}: removed {1} object(s) from the pool", getName(), victims.size());
+				logDebug(getName() + ": removed " + victims.size() + " object(s) from the pool");
 			}
 
 			if( running ) {
@@ -624,7 +624,6 @@ abstract public class ObjectPool implements Runnable {
 				}
 			}
 
-
 		}
 
 		try {
@@ -632,7 +631,6 @@ abstract public class ObjectPool implements Runnable {
 		} catch (Throwable e) {
 
 		}
-
 
 	}
 
