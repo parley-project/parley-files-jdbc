@@ -17,7 +17,7 @@ import java.util.Map;
 import java.security.SecureRandom;
 
 import us.bringardner.parley.core.BaseObject;
-import us.bringardner.parley.core.ILogger;
+import us.bringardner.parley.core.util.LogHelper;
 import us.bringardner.parley.files.lock.LockBackend;
 
 /**
@@ -48,11 +48,8 @@ import us.bringardner.parley.files.lock.LockBackend;
  */
 final class JdbcLocks {
 
-	/** The logger, looked up each time: parley-core picks the logger type at the first lookup,
-	 *  and clearLoggerCache() would leave a kept one behind */
-	private static ILogger log() {
-		return BaseObject.findLogger(JdbcLocks.class.getName());
-	}
+	/** Logs for this class (it isn't a BaseObject) */
+	private static final LogHelper LOG = new LogHelper(JdbcLocks.class);
 
 	/** One row per locked file: the mutex for taking its locks. */
 	static final String TABLE = "file_source.file_lock";
@@ -449,7 +446,7 @@ final class JdbcLocks {
 				try {
 					holder.rollback();
 				} catch (SQLException e) {
-					log().debug("Rolling back a lock connection", e);
+					LOG.logDebug("Rolling back a lock connection", e);
 				}
 				quietlyClose(holder);
 			}
@@ -460,7 +457,7 @@ final class JdbcLocks {
 				try {
 					mutex.rollback();
 				} catch (SQLException e) {
-					log().debug("Rolling back the lock mutex", e);
+					LOG.logDebug("Rolling back the lock mutex", e);
 				}
 			}
 		}
@@ -476,7 +473,7 @@ final class JdbcLocks {
 				}
 			} catch (SQLException | IOException e) {
 				// left as a stale claim: the next locker removes it
-				log().debug("Removing lock row " + id, e);
+				LOG.logDebug("Removing lock row " + id, e);
 			}
 		}
 
@@ -527,11 +524,11 @@ final class JdbcLocks {
 				return;
 			} catch (SQLException e) {
 				// the row stays as a stale claim (its row lock ends with the connection), removed by the next locker
-				log().debug("Removing lock row " + h.id + " of file " + fileid, e);
+				LOG.logDebug("Removing lock row " + h.id + " of file " + fileid, e);
 				try {
 					h.con.rollback();
 				} catch (SQLException e2) {
-					log().debug("Rolling back a lock connection", e2);
+					LOG.logDebug("Rolling back a lock connection", e2);
 				}
 			}
 			quietlyClose(h.con);
@@ -550,7 +547,7 @@ final class JdbcLocks {
 				try {
 					c.close();
 				} catch (SQLException e) {
-					log().debug("Closing a lock connection", e);
+					LOG.logDebug("Closing a lock connection", e);
 				}
 			}
 		}

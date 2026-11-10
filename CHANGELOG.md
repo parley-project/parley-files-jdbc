@@ -2,6 +2,10 @@
 
 ## parley-files-jdbc 2.0.0 (unreleased)
 
+### Changed (2026-11-10: logging through System.Logger, To-Do 19.5)
+
+- **Logging through `System.Logger`** (parley-core): `JdbcLocks` logs through a `LogHelper`.
+
 ### Changed (2026-11-08: logging through ILogger, To-Do 19.1 and 19.2)
 
 - **Logging goes through parley-core's ILogger**: `ObjectPool` is a `BaseObject` now (so is every pool,
