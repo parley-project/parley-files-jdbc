@@ -130,6 +130,12 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	Map<String,FieldValue> fieldCache = new java.util.concurrent.ConcurrentHashMap<>();
 
 
+	/** What a symbolic link has of its own, as on POSIX (D78): the rest is answered by what it leads to. */
+	private static final java.util.Set<String> OWN_FIELDS = new java.util.HashSet<>(java.util.Arrays.asList(
+			"owner", "group_name", "create_time", "last_access_date", "last_modified_date",
+			"owner_readable", "owner_writeable", "owner_executable", "group_readable", "group_writeable", "group_executable",
+			"other_readable", "other_writeable", "other_executable"));
+
 	private Object getFieldValue(String name) throws IOException {
 		String sql = "select "+name+" from file_source.file where fileid = ?";
 		Object ret = getFieldValue(name,sql);
@@ -142,7 +148,9 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			FieldValue val = fieldCache.get(name);
 
 			if( val == null || val.hasExprired() ) {
-				long id = rowId();   // of the file this answers for (a link's target), before a connection is held
+				// of the file this answers for (a link's target), before a connection is held; a link's owner, group,
+				// times and mode bits are its own (D78)
+				long id = OWN_FIELDS.contains(name) ? ownRowId() : rowId();
 				try(Connection con = factory.getConnection()) {
 					try(PreparedStatement pstmt = con.prepareStatement(sql)) {
 						pstmt.setLong(1, id);
@@ -822,7 +830,18 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	/** The id of the row that answers for this path. It is for a file that exists (or is about to). */
 	long rowId() throws IOException {
-		JdbcFileSource r = resolve();
+		return rowIdOf(resolve());
+	}
+
+	/**
+	 * The id of this path's own row, not the one a symbolic link leads to: a link is an inode of its own,
+	 * with its own owner, group, times and mode, as on POSIX (D78).
+	 */
+	long ownRowId() throws IOException {
+		return rowIdOf(this);
+	}
+
+	private long rowIdOf(JdbcFileSource r) throws IOException {
 		// (read once: another thread may look the row up again meanwhile)
 		Long id = r.fileid;
 		if( id == null || System.currentTimeMillis() - r.fileidAt > factory.getFieldTimeToLive() ) {
@@ -892,6 +911,14 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 					}
 				} else {
 					inode = insertInode(con, LINK, false);
+					// a link's own mode is rwxrwxrwx, as lstat shows it on Linux (D78)
+					try(PreparedStatement mode = con.prepareStatement("update file_source.file set "
+							+ OWNER_READABLE + "=true," + OWNER_WRITEABLE + "=true," + OWNER_EXECUTABLE + "=true,"
+							+ GROUP_READABLE + "=true," + GROUP_WRITEABLE + "=true," + GROUP_EXECUTABLE + "=true,"
+							+ OTHER_READABLE + "=true," + OTHER_WRITEABLE + "=true," + OTHER_EXECUTABLE + "=true where fileid = ?")) {
+						mode.setLong(1, inode);
+						mode.executeUpdate();
+					}
 					try(PreparedStatement pstmt = con.prepareStatement(
 							"insert into file_source.file_link (link_id,target_id,target_path) values(?,null,?)")) {
 						pstmt.setLong(1, inode);
@@ -1096,7 +1123,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			// as java.io.FileInputStream: a caller tells "gone" (another process took it) by the type
 			throw new FileNotFoundException(getAbsolutePath() + (exists() ? " (Is a directory)" : " (No such file or directory)"));
 		}
-		long len = length();
+		long len = contentLength();
 		if( startingPosition>=len) {
 			startingPosition = len;
 		}
@@ -1104,6 +1131,16 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			setLastAccessTime(System.currentTimeMillis());
 		}
 		return new JdbcFileInputStream(this,startingPosition);
+	}
+
+	/** The path this link points to, as the database keeps it (D78: a link's length is the length of this). */
+	@Override
+	public String getLinkText() throws IOException {
+		if( rowExists() && LINK.equals(ownType()) ) {
+			Object[] entry = linkEntry();
+			return entry == null ? null : (String) entry[1];
+		}
+		return null;
 	}
 
 	@Override
@@ -1297,6 +1334,12 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 	public long length() throws IOException {
 
 		long ret = 0;
+
+		// as lstat: a symbolic link's own length is that of its text (D78); contentLength() is the file's
+		if( rowExists() && LINK.equals(ownType()) ) {
+			Object[] entry = linkEntry();
+			return entry == null || entry[1] == null ? 0 : ((String) entry[1]).getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
+		}
 
 		// exists() looks the file up and sets fileid; a fresh handle used to answer 0 for any file
 		if( exists()) {
@@ -1633,7 +1676,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return false;
 		}
 		String sql = "update file_source.file set create_time=? where fileid=?";
-		if( executeUpdate(sql, new Timestamp(arg0),rowId()) != 1) {
+		if( executeUpdate(sql, new Timestamp(arg0),ownRowId()) != 1) {
 			return false;
 		};
 		return true;
@@ -1665,7 +1708,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return false;
 		}
 		String sql = "update file_source.file set group_name = ? where fileid = ?";
-		if(executeUpdate(sql,arg0,rowId()) != 1) {
+		if(executeUpdate(sql,arg0.getName(),ownRowId()) != 1) {
 			return false;
 		}
 		return true;
@@ -1747,7 +1790,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return false;
 		}
 		String sql = "update file_source.file set last_access_date = ? where fileid = ?";
-		if(executeUpdate(sql,new Timestamp(arg0),rowId()) !=1) {
+		if(executeUpdate(sql,new Timestamp(arg0),ownRowId()) !=1) {
 			return false;
 		}
 		return true;
@@ -1762,7 +1805,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		}
 		Timestamp time = new Timestamp(arg0);
 		String sql = "update file_source.file set "+LAST_MODIFIED_DATE+" = ? where fileid = ?";
-		if( executeUpdate(sql,time,rowId()) !=1) {
+		if( executeUpdate(sql,time,ownRowId()) !=1) {
 			return false;
 		}
 		setFieldCache(LAST_MODIFIED_DATE, time);
@@ -1815,7 +1858,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 			return false;
 		}
 		String sql = "update file_source.file set owner = ? where fileid = ?";
-		if(executeUpdate(sql,arg0.getName(),rowId())!=1) {
+		if(executeUpdate(sql,arg0.getName(),ownRowId())!=1) {
 			return false;
 		}
 		return true;
@@ -1962,7 +2005,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 		if( refreash ) {
 			removeCache(LENGTH,CHUNK_COUNT);
 		}
-		return length();
+		return contentLength();
 	}
 
 	private void removeCache(String ... args) {
@@ -1973,7 +2016,7 @@ public class JdbcFileSource extends BaseObject implements FileSource {
 
 	public void truncate() throws IOException  {
 
-		long len = length();
+		long len = contentLength();
 		if( len > 0 ) {
 			long id = rowId();
 			try(Connection con = factory.getConnection()) {

@@ -104,7 +104,7 @@ public class JdbcRandomAccessIoController implements IRandomAccessIoController {
 
 	
 	public long length() throws IOException {
-		long ret = file.length();
+		long ret = file.contentLength();
 		if(currentChunk !=null && currentChunk.isNew) {
 			if( maxWriteOffset>=0) {
 				ret += maxWriteOffset+1;
@@ -249,7 +249,7 @@ Calf
 
 	public void setLength(long newLength) throws IOException {
 		save();
-		long len = file.length();
+		long len = file.contentLength();
 		if( len == newLength) {
 			return;
 		}
@@ -264,7 +264,7 @@ Calf
 	}
 
 	private void expandTo(long newLength) throws IOException {
-		long len = file.length();
+		long len = file.contentLength();
 		long expand = newLength - len;
 		if( expand<=0) {
 			// positive 
@@ -287,7 +287,7 @@ Calf
 	}
 
 	private void shrinkTo(long newLength) throws IOException {
-		long len = file.length();
+		long len = file.contentLength();
 		if( newLength >= len) {
 			// positive 
 			throw new IOException("Logic error newLength should be > len"+newLength);
@@ -344,9 +344,9 @@ Calf
 		
 		// just to be safe
 		maxWriteOffset = -1;
-		if( pos >= file.length() || max == 0) {
+		if( pos >= file.contentLength() || max == 0) {
 			Chunk c = new Chunk();
-			c.start = file.length();
+			c.start = file.contentLength();
 			c.chunk_number=-1;
 			c.size = chunkSize;
 
