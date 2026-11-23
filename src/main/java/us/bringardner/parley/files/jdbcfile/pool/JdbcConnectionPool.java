@@ -26,7 +26,6 @@
 package us.bringardner.parley.files.jdbcfile.pool;
 
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.SQLException;
 import java.util.Collections;
 import java.util.Map;
@@ -67,7 +66,7 @@ public JdbcConnectionPool(String newUrl, String newUserid, String newPasswd)
  */
 public IManagedObject createObject() throws SQLException {
 	
-	Connection con = DriverManager.getConnection(url,userid,passwd);
+	Connection con = JdbcDrivers.connect(url,userid,passwd);
 	try {
 		return new ManagedJdbcConnection(con);
 	} catch(SQLException | RuntimeException ex) {

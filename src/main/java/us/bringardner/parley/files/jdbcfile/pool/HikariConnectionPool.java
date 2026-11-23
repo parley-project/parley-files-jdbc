@@ -22,6 +22,11 @@ public final class HikariConnectionPool implements ConnectionPool {
 	public HikariConnectionPool(String url, String userid, String passwd) throws SQLException {
 		HikariConfig c = new HikariConfig();
 		c.setJdbcUrl(url);
+		// a driver DriverManager doesn't know (in a web application's own libraries) is named, so HikariCP loads it
+		String driver = JdbcDrivers.driverClassName(url);
+		if( driver != null ) {
+			c.setDriverClassName(driver);
+		}
 		if( userid != null ) {
 			c.setUsername(userid);
 		}

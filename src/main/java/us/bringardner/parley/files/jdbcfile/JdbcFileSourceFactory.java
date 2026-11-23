@@ -810,7 +810,7 @@ public class JdbcFileSourceFactory extends FileSourceFactory {
 			}
 			closeQuietly(c);
 		}
-		return java.sql.DriverManager.getConnection(loginUrl, loginUser, loginPassword);
+		return us.bringardner.parley.files.jdbcfile.pool.JdbcDrivers.connect(loginUrl, loginUser, loginPassword);
 	}
 
 	/**

@@ -2,6 +2,13 @@
 
 ## parley-files-jdbc 2.0.0 (unreleased)
 
+### Changed (2026-11-22: JDBC driver found through the module's class loader)
+
+- **`JdbcDrivers`**: connections are opened with a driver found through this module's class loader (then the
+  thread context class loader) when `DriverManager` does not know the URL, so the module works in a web
+  application where the JDBC driver sits in `WEB-INF/lib` ("No suitable driver" before). `DriverManager` is
+  still used first and as the fallback. The Hikari and DBCP2 pools set the driver class name from the URL.
+
 ### Changed (2026-11-10: logging through System.Logger, To-Do 19.5)
 
 - **Logging through `System.Logger`** (parley-core): `JdbcLocks` logs through a `LogHelper`.

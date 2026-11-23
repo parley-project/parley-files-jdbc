@@ -21,6 +21,11 @@ public final class Dbcp2ConnectionPool implements ConnectionPool {
 	 */
 	public Dbcp2ConnectionPool(String url, String userid, String passwd) throws SQLException {
 		ds.setUrl(url);
+		// a driver DriverManager doesn't know (in a web application's own libraries) is named, so DBCP2 loads it
+		String driver = JdbcDrivers.driverClassName(url);
+		if( driver != null ) {
+			ds.setDriverClassName(driver);
+		}
 		if( userid != null ) {
 			ds.setUsername(userid);
 		}
