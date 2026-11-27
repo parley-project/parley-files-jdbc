@@ -26,6 +26,7 @@ import us.bringardner.parley.files.StreamOption;
 import us.bringardner.parley.files.StreamOptions;
 import us.bringardner.parley.files.jdbcfile.JdbcFileSource;
 import us.bringardner.parley.files.jdbcfile.JdbcFileSourceFactory;
+import us.bringardner.parley.logging.testing.ErrorsExpected;
 
 /**
  * The connection's default size is for programmers: the connect property "bufferSize" (or
@@ -102,6 +103,7 @@ public class JdbcBufferSizeTest {
 		assertEquals(JdbcFileSourceFactory.DEFAULT_BUFFER_SIZE, new JdbcFileSourceFactory().getBufferSize());
 	}
 
+	@ErrorsExpected
 	@Test
 	void anEmptyOrBadValueKeepsTheSizeAndDoesNotThrow() {
 		JdbcFileSourceFactory f = new JdbcFileSourceFactory();

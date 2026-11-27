@@ -22,6 +22,7 @@ import us.bringardner.parley.files.credentials.CredentialException;
 import us.bringardner.parley.files.credentials.Credentials;
 import us.bringardner.parley.files.credentials.EnvCredentialProvider;
 import us.bringardner.parley.files.jdbcfile.JdbcFileSourceFactory;
+import us.bringardner.parley.logging.testing.ErrorsExpected;
 
 /**
  * The JDBC password may be a reference (@env:..., @prompt:...), resolved only to log in; a
@@ -70,6 +71,7 @@ public class JdbcCredentialReferenceTest {
 		}
 	}
 
+	@ErrorsExpected
 	@Test
 	public void aWrongPromptedPasswordIsAskedForAgain() throws IOException {
 		List<String> answers = new ArrayList<>(List.of("wrong", PASSWORD));
